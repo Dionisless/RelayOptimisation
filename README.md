@@ -5,7 +5,7 @@
 
 
 
-- Идея оптимизации:
+Идея оптимизации:
 ![image](https://github.com/user-attachments/assets/e6c79a98-35b9-494a-b71e-4c00dff67761)
 
 
