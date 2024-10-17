@@ -17,7 +17,6 @@ import optuna
 import kar_optimisation_pypeline as kar_opt
 
 
-# Функции, предоставленные вами
 
 def show_bad_results(mdl, submdl_dict):
     prot_work = kanl.analyze_relay_protections(mdl, submdl_dict, log=False, range_prot_analyse=False, print_G=False)
