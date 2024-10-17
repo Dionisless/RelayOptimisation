@@ -6,7 +6,6 @@ import queue
 import sys
 import io
 import math
-# Если используете matplotlib для графиков
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
