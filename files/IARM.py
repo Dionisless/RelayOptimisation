@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Dec 24 13:29:59 2020
+Конвертер моделей АРМ СРЗА (Excel) в Python-скрипты для расчётной программы МРТКЗ (mrtkz3).
 
-@author: aspirmk
+Читает файлы АРМ СРЗА в формате .xls и генерирует .py-файлы, содержащие
+объектную модель энергосистемы (узлы, ветви, трансформаторы, взаимоиндукции,
+защиты) в формате mrtkz3.
 
-Преобразование моделей АРМ СРЗА в формате Excel в скрипты Python3 для МРТКЗ 
+Основной класс: ArmModel
+  Метод Exp2MRTKZ(filename, RW) -- экспортирует текущую модель в Python-скрипт.
 """
 import xlrd
 import numpy as np
@@ -279,9 +282,6 @@ class ImpModel:
 
 
     def Exp2MRTKZ(self, filename, RW=False):
-#        if not RW:
-#            with open(filename+'.py', "r") as file:
-#                raise ValueError('Файл с таким именем уже существует')
         with open(filename+'.py', "wb") as file:
             res = []
             res.append("# -*- coding: utf-8 -*-\n")
@@ -321,7 +321,6 @@ class ImpModel:
             res.append("\n")
             res.append("\n")
             res.append("#Проверка на вырожденность\n")
-            #res.append("mdl.Test4Singularity()\n")
             res.append("\n")
             res.append("#Создание однофазного КЗ\n")
             res.append("#KZ1 = mrtkz.N(mdl,'Однофазное КЗ', q_, 'A0')\n")

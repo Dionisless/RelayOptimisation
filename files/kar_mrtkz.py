@@ -1,18 +1,39 @@
+"""
+Расширения библиотеки mrtkz3 для моделирования релейной защиты энергосистем.
+
+Функции:
+  base_model              -- тестовая модель (5 узлов, 6 линий, 4 ступени защит)
+  kz_q / q_del / p_del   -- формирование подрежимов (добавление узла КЗ, удаление ветвей/узлов)
+  duplicate_mdl           -- копирование модели
+  p_search / q_search     -- поиск ветвей и узлов по имени
+  belt_search             -- обход топологии по поясам защиты
+  generate_line_combinations / line_enumiration -- перебор вариантов отключений
+  print_G                 -- визуализация схемы сети
+  find_tehe_def_edge / protection_edge_dict / protection_visual -- анализ и визуализация срабатываний
+  mdl_belts_full_dict / belts_full_list -- словари поясной структуры сети
+"""
 import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import spsolve
-#import pandas as pd
 import mrtkz3 as mrtkz
 from collections import deque
 import itertools
-#import copy
 
 
-''' Функции, добавленные к библиотеке mrtkz3 Артуром Клементом'''
-# тестовая модель, используется для тестирования функций
 def base_model():
+    """
+    Создаёт и возвращает тестовую модель энергосистемы.
+
+    Топология: 5 узлов (PS1–PS5), 6 воздушных линий, 2 источника ЭДС,
+    3 трансформатора с заземлёнными нейтралями, взаимоиндукция L4-L5.
+    На каждую ветвь добавлены 4 ступени ТЗНП с уставками I0=3000/2000/1000/0 А
+    и t=0/1/2/3 с. Одна дополнительная ступень 9 на Line5.
+
+    Возвращает:
+        mdl -- объект модели mrtkz.Model (не рассчитана; прошла Test4Singularity)
+    """
     mdl=mrtkz.Model()
 
     #Создание узлов
@@ -43,12 +64,6 @@ def base_model():
     T4 = mrtkz.P(mdl,'PS4',0,q4,(500,200j,30j))
 
     #Добавление защит
-    '''
-    pr1 = mrtkz.protection(p=Line2, q=Line2.q1, stage=1, I0=3000, t=0, type='ТЗНП', P_rnm=0, rnm_base_angle=0, stage_on = True, I0_range=[300,3000], t_range=[0,20], desc='')
-    pr2 = mrtkz.protection(p=Line2, q=Line2.q1, stage=2, I0=1000, t=5, type='ТЗНП', P_rnm=0, rnm_base_angle=0, stage_on = True, I0_range=[300,3000], t_range=[0,20], desc='')
-    pr3 = mrtkz.protection(p=Line5, q=Line5.q2, stage=1, I0=1000, t=0, type='ТЗНП', P_rnm=0, rnm_base_angle=0, stage_on = True, I0_range=[300,3000], t_range=[0,20], desc='')
-    #mdl.bp[3].q1_def[1].I0 - вызов параметров релейной защиты
-    '''
     #Добавление по 4 ступени на узел
     for p in mdl.bp:
         for i in range(1,5):
@@ -64,16 +79,28 @@ def base_model():
     return mdl
 
 
-'''
-КОПИЯ Функция создает узел промежуточного КЗ, создает линии для жтого участка, удаляет общую линию. Возвращает список из Двух линий и узла.
-Функция два раза переписывает модель, один раз исполняя функцию duplicate_mdl(), второй раз во время p_del(). Очевидная оптимизация - переписать эту функцию, сделав ее похожей на p_del(), но с дорисовыванием двух ветвей и узла.
-
-Также есть функция каскада. Если kaskade=True, то функция возвращает 3 модели обычную и двсе с отключенными участками линии вокруг кз
-'''
 
 
 def kz_q(mdl, line, percentage_of_line=0.5, show_G=True, show_par=False, kaskade=False):
+    """
+    Добавляет промежуточный узел КЗ на линию и возвращает подмодель.
 
+    Разбивает линию `line` в точке `percentage_of_line` на два участка (q1-kz и kz-q2),
+    переносит защиты и взаимоиндукции, удаляет исходную ветвь через p_del.
+    Если kaskade=True, дополнительно возвращает две подмодели с отключёнными участками вокруг КЗ.
+
+    Параметры:
+        mdl                -- базовая модель сети
+        line               -- объект линии (mrtkz.P) для постановки КЗ
+        percentage_of_line -- доля линии от узла q1 (0..1, по умолчанию: 0.5)
+        show_G             -- вывод графа после создания подмодели (по умолчанию: True)
+        show_par           -- вывод координат узла КЗ (по умолчанию: False)
+        kaskade            -- режим каскада: возвращает 3 подмодели (по умолчанию: False)
+
+    Возвращает:
+        sub_mdl              -- подмодель с узлом KZ (kaskade=False)
+        или (sub_mdl, sub_mdl_q1, sub_mdl_q2) при kaskade=True
+    """
     if line.q1 == 0:
         q_x = line.q2.x + 0.25*percentage_of_line
         q_y = line.q2.y - 0.5*percentage_of_line
@@ -85,17 +112,10 @@ def kz_q(mdl, line, percentage_of_line=0.5, show_G=True, show_par=False, kaskade
         q_x = line.q1.x + (line.q2.x - line.q1.x)*percentage_of_line
         q_y = line.q1.y + (line.q2.y - line.q1.y)*percentage_of_line
 
-    #print(q_x, q_y)
     sub_mdl = duplicate_mdl(mdl, show_G = False)
     
-    #sub_mdl=mrtkz.Model()
-    #sub_mdl = mdl
-    #sub_mdl.Calc()# delete
-    #print(sub_mdl.bq)
     KZ_q = mrtkz.Q(sub_mdl,'KZ', x=q_x, y=q_y) # создаем узел КЗ
     if show_par: print("X: ",KZ_q.x,"Y: ", KZ_q.y)
-    #sub_mdl.Calc()# delete
-    #print(sub_mdl.bq)
     try:
         q1_name = line.q1.name
         q1_sub = q_search(sub_mdl,q_name=q1_name) # ищим узел с таким же названием в подмодели как в модели mdl линии line
@@ -148,10 +168,18 @@ def kz_q(mdl, line, percentage_of_line=0.5, show_G=True, show_par=False, kaskade
         return sub_mdl_2
 
 
-'''
-Функция создает подрежим в котором удален узел "del_q_name" по имени узла q.name. Также удаляются ветви, связанные с этим узлом
-'''
 def q_del(mdl, del_q_name, show_G=True):
+    """
+    Создаёт подрежим с удалённым узлом и всеми связанными ветвями.
+
+    Параметры:
+        mdl         -- базовая модель сети
+        del_q_name  -- имя удаляемого узла
+        show_G      -- вывод графа после удаления (по умолчанию: True)
+
+    Возвращает:
+        submdl -- рассчитанная подмодель без узла del_q_name
+    """
     submdl=mrtkz.Model() # создаем подрежим
     submdl.Clear()
     submdl=mrtkz.Model()
@@ -210,11 +238,26 @@ def q_del(mdl, del_q_name, show_G=True):
         print_G(submdl)
     return submdl
 
-'''
-V3 Функция удаляет ветвь и ее узлы, если они тупиковые
-'''
 def p_del(mdl, del_p_name=[],q1_name='', q2_name='', show_G=True, show_par=False, node = False):
-    
+    """
+    Создаёт подрежим с удалёнными ветвями (моделирование отключения линий).
+
+    Ветвь задаётся именем (del_p_name) или парой узлов (q1_name, q2_name).
+    Если node задан и граф становится несвязным, сохраняет только ветви,
+    достижимые из узла node (BFS по графу).
+
+    Параметры:
+        mdl         -- базовая модель сети
+        del_p_name  -- имя ветви (str), список имён (list) или кортеж (tuple) для удаления
+        q1_name     -- имя первого узла удаляемой ветви (альтернатива del_p_name)
+        q2_name     -- имя второго узла удаляемой ветви (альтернатива del_p_name)
+        show_G      -- вывод графа после удаления (по умолчанию: True)
+        show_par    -- вывод имён удалённых ветвей (по умолчанию: False)
+        node        -- имя узла, от которого сохраняется связная компонента (по умолчанию: False)
+
+    Возвращает:
+        submdl -- подмодель без удалённых ветвей (не рассчитана)
+    """
     if (del_p_name==[]) and (q1_name=='' or q2_name==''):
         print('Ведите название линии в del_p_name или названия узлов в q1_name и q2_name')
         return
@@ -232,11 +275,6 @@ def p_del(mdl, del_p_name=[],q1_name='', q2_name='', show_G=True, show_par=False
     elif not isinstance(del_p_name, list):
         raise ValueError("del_p_name должен быть строкой, кортежем или списком")
 
-    #if (del_p_name, tuple): del_p_name = list(del_p_name)
-    #elif not isinstance(del_p_name, list): 
-    #    temp_var = []
-    #    temp_var.append(del_p_name)
-    #    del_p_name = temp_var
     # блок, определяющий связный ли получается граф и если не связный, то оставляет только линии которые пренадлежат к узлу node
     if node == False:
         lines = '' 
@@ -335,164 +373,8 @@ def p_del(mdl, del_p_name=[],q1_name='', q2_name='', show_G=True, show_par=False
         print_G(submdl)
     return submdl
 
-# V2 функции удалить, если все работает
-def p_del_old(mdl, del_p_name=[],q1_name='', q2_name='', show_G=True, show_par=False):
-    
-    if (del_p_name==[]) and (q1_name=='' or q2_name==''):
-        print('Ведите название линии в del_p_name или названия узлов в q1_name и q2_name')
-        return
-    if (del_p_name!=[]) and (q1_name!='' or q2_name!=''):
-        print('Ведите либо название линии в del_p_name, либо названия узлов в q1_name и q2_name. Не одновременно.')
-        return
-    submdl=mrtkz.Model() # создаем подрежим
-    submdl.Clear()
-    submdl=mrtkz.Model()
-    q_list = []
-    if isinstance(del_p_name, tuple):
-        del_p_name = list(del_p_name)
-    elif isinstance(del_p_name, str):
-        del_p_name = [del_p_name]
-    elif not isinstance(del_p_name, list):
-        raise ValueError("del_p_name должен быть строкой, кортежем или списком")
 
-    #if (del_p_name, tuple): del_p_name = list(del_p_name)
-    #elif not isinstance(del_p_name, list): 
-    #    temp_var = []
-    #    temp_var.append(del_p_name)
-    #    del_p_name = temp_var
-    for p in mdl.bp:
-        # решаем проблему с тем что узел может быть узлом, а может нулем
-        try:        
-            q1_p_name = p.q1.name
-        except:
-            q1 = 0
-            q1_p_name = '0'
-        try:
-            q2_p_name = p.q2.name
-        except:
-            q2 = 0
-            q2_p_name = '0'
-        # для остальных ветвей
-        if (p.name not in del_p_name) and not ((q1_p_name == q1_name and q2_p_name == q2_name) or (q1_p_name == q2_name and q2_p_name == q1_name)):
-            # создаем узлы, проверяя что они не нулевые и их еще нет в модели (используем для этого список уже добавленных листов)
-            if (q1_p_name!='0') and (q1_p_name not in q_list):   
-                mrtkz.Q(submdl,name=q1_p_name, x=p.q1.x,y=p.q1.y)
-                q_list.append(q1_p_name)
 
-            if (q2_p_name!='0') and (q2_p_name not in q_list):   
-                mrtkz.Q(submdl,name=q2_p_name, x=p.q2.x,y=p.q2.y)
-                q_list.append(q2_p_name)  
-            for q in submdl.bq:
-                if q.name == q1_p_name:
-                    q1 = q
-                if q.name == q2_p_name:
-                    q2 = q    
-            # добавляем в подрежим ветвь    
-            mrtkz.P(submdl,name=p.name,q1=q1,q2=q2,Z=p.Z,E=p.E,T=p.T,B=p.B,desc=p.desc)
-
-            # добавляем в подрежим РЗ
-            for prot1 in p.q1_def:
-                mrtkz.protection(p=submdl.bp[-1], q=submdl.bp[-1].q1, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
-            
-            for prot1 in p.q2_def:
-                mrtkz.protection(p=submdl.bp[-1], q=submdl.bp[-1].q2, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
-
-        # если это удаляемая ветвь
-        else:
-            if show_par: print('Удаляем ветвь', p.name)           
-    # добавляем в подрежим взаимоиндукции
-    try:
-        for m in mdl.bm:
-            p1 = p_search(mdl=submdl,p_name=m.p1.name, info=False)
-            p2 = p_search(mdl=submdl,p_name=m.p2.name, info=False)
-            mrtkz.M(model=submdl,name=m.name,p1=p1,p2=p2,M12=m.M12,M21=m.M21,desc=m.desc)
-    except: 1
-    # добавляем в подрежим несимметрии
-    try:
-        for n in mdl.bn:
-            mrtkz.N(model=submdl,name=n.name,qp=q_search(submdl,n.qp.name, info=False),SC=n.SC,r=n.r,desc=n.desc)  
-    except: 1
-    if show_G:
-        print_G(submdl)
-    return submdl
-
-'''
-Функция удаляет ветвь и ее узлы, если они тупиковые
-'''
-'''def p_del(mdl, del_p_name=[],q1_name='', q2_name='', show_G=True, show_par=False):
-    
-    if (del_p_name==[]) and (q1_name=='' or q2_name==''):
-        print('Ведите название линии в del_p_name или названия узлов в q1_name и q2_name')
-        return
-    if (del_p_name!=[]) and (q1_name!='' or q2_name!=''):
-        print('Ведите либо название линии в del_p_name, либо названия узлов в q1_name и q2_name. Не одновременно.')
-        return
-    submdl=mrtkz.Model() # создаем подрежим
-    submdl.Clear()
-    submdl=mrtkz.Model()
-    q_list = []
-    if (del_p_name, tuple): del_p_name = list(del_p_name)
-    if not isinstance(del_p_name, list): 
-        temp_var = []
-        temp_var.append(del_p_name)
-        del_p_name = temp_var
-    for p in mdl.bp:
-        # решаем проблему с тем что узел может быть узлом, а может нулем
-        try:        
-            q1_p_name = p.q1.name
-        except:
-            q1 = 0
-            q1_p_name = '0'
-        try:
-            q2_p_name = p.q2.name
-        except:
-            q2 = 0
-            q2_p_name = '0'
-        # если это удаляемая ветвь
-        if p.name in del_p_name or (q1_p_name == q1_name and  q2_p_name == q2_name) or (q1_p_name == q2_name and  q2_p_name == q1_name):
-            if show_par: print('Удаляем ветвь', p.name)
-        # для остальных ветвей
-        else:
-            # создаем узлы, проверяя что они не нулевые и их еще нет в модели (используем для этого список уже добавленных листов)
-            if (q1_p_name!='0') and (q1_p_name not in q_list):   
-                mrtkz.Q(submdl,name=q1_p_name, x=p.q1.x,y=p.q1.y)
-                q_list.append(q1_p_name)
-
-            if (q2_p_name!='0') and (q2_p_name not in q_list):   
-                mrtkz.Q(submdl,name=q2_p_name, x=p.q2.x,y=p.q2.y)
-                q_list.append(q2_p_name)  
-            for q in submdl.bq:
-                if q.name == q1_p_name:
-                    q1 = q
-                if q.name == q2_p_name:
-                    q2 = q    
-            # добавляем в подрежим ветвь    
-            mrtkz.P(submdl,name=p.name,q1=q1,q2=q2,Z=p.Z,E=p.E,T=p.T,B=p.B,desc=p.desc)
-
-            # добавляем в подрежим РЗ
-            for q_def in [p.q1_def, p.q2_def]:
-                for prot1 in q_def:
-                    mrtkz.protection(p=submdl.bp[-1], q=submdl.bp[-1].q1, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
-    # добавляем в подрежим взаимоиндукции
-    try:
-        for m in mdl.bm:
-            p1 = p_search(mdl=submdl,p_name=m.p1.name, info=False)
-            p2 = p_search(mdl=submdl,p_name=m.p2.name, info=False)
-            mrtkz.M(model=submdl,name=m.name,p1=p1,p2=p2,M12=m.M12,M21=m.M21,desc=m.desc)
-    except: 1
-    # добавляем в подрежим несимметрии
-    try:
-        for n in mdl.bn:
-            mrtkz.N(model=submdl,name=n.name,qp=q_search(submdl,n.qp.name, info=False),SC=n.SC,r=n.r,desc=n.desc)  
-    except: 1
-    if show_G:
-        print_G(submdl)
-    return submdl
-'''
-
-'''
-Визуализация участка энергосистемы (пока только узлы, линии и нулевые узлы)
-'''
 def print_G(mdl, I=False, show_prot=False):
     if I==False:
         pos = nx.get_node_attributes(mdl.G, 'pos')
@@ -630,6 +512,19 @@ def print_G(mdl, I=False, show_prot=False):
 
 # функция, каходящая линию по названию узлов или ветви в модели
 def p_search(mdl,q1='',q2='', p_name='', info=True):
+    """
+    Находит ветвь в модели по имени или по именам двух узлов.
+
+    Параметры:
+        mdl    -- объект модели сети
+        q1     -- имя первого узла (поиск по паре узлов)
+        q2     -- имя второго узла (поиск по паре узлов)
+        p_name -- имя ветви (поиск по имени)
+        info   -- вывод предупреждения, если ветвь не найдена (по умолчанию: True)
+
+    Возвращает:
+        объект ветви mrtkz.P или '' если не найдена
+    """
     line = ''
     # Поиск по названию ветви
     if p_name!='' and q1=='' and q2=='':
@@ -651,6 +546,17 @@ def p_search(mdl,q1='',q2='', p_name='', info=True):
 
 # функция, находящая узел по названию
 def q_search(mdl,q_name='', info=True):
+    """
+    Находит узел в модели по имени.
+
+    Параметры:
+        mdl    -- объект модели сети
+        q_name -- имя узла для поиска
+        info   -- вывод предупреждения при отсутствии (по умолчанию: True)
+
+    Возвращает:
+        объект узла mrtkz.Q или '' если не найден
+    """
     q_ser = ''
     for q in mdl.bq:
         if q.name==q_name: q_ser = q
@@ -664,6 +570,16 @@ def q_search(mdl,q_name='', info=True):
 
 # функция создает новую модель и другие объекты на основании другой модели
 def duplicate_mdl(mdl1, show_G = False):
+    """
+    Создаёт полную копию модели со всеми ветвями, узлами, защитами, взаимоиндукциями и несимметриями.
+
+    Параметры:
+        mdl1   -- исходная модель mrtkz.Model
+        show_G -- вывод графа скопированной модели (по умолчанию: False)
+
+    Возвращает:
+        mdl2 -- новый объект mrtkz.Model, независимая копия mdl1
+    """
     mdl2=mrtkz.Model()
     q_list = []
     for p in mdl1.bp:
@@ -691,11 +607,8 @@ def duplicate_mdl(mdl1, show_G = False):
                 q1 = q
             if q.name == q2_p_name:
                 q2 = q    
-        # добавляем в подрежим ветвь    
+        # добавляем в подрежим ветвь
         mrtkz.P(mdl2,name=p.name,q1=q1,q2=q2,Z=p.Z,E=p.E,T=p.T,B=p.B,desc=p.desc)
-        #self.nq1_def = 0
-        #self.nq2_def = 0
-        #mdl.bp[3].q1_def[0].type
         for prot1 in p.q1_def:
             mrtkz.protection(p=mdl2.bp[-1], q=mdl2.bp[-1].q1, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
         
@@ -716,92 +629,6 @@ def duplicate_mdl(mdl1, show_G = False):
     return mdl2
 
 
-# функция берет общий df с результатами, линию из функции промКЗ, долю линии% в которой от узла q1 произошло КЗ, и линию в которой результат.
-# возвращает df с результатами по концам этой линии
-'''
-results_df = pd.DataFrame(columns = ['Линия кз', 'Место кз', 'Тип кз', 'Линия', 'Узел','U1','U2','U0','3U0','UA','UB','UC','UAB','UBC','UCA',
-        'I1','I2','I0','3I0','IA','IB','IC','IAB','IBC','ICA',
-        'Z1','Z2','Z0','ZA','ZB','ZC','ZAB','ZBC','ZCA',
-        'S1','S2','S0','SA','SB','SC','SAB','SBC','SCA','S'])
-
-full_p_var_list = ['U1','U2','U0','3U0','UA','UB','UC','UAB','UBC','UCA',
-        'I1','I2','I0','3I0','IA','IB','IC','IAB','IBC','ICA',
-        'Z1','Z2','Z0','ZA','ZB','ZC','ZAB','ZBC','ZCA',
-        'S1','S2','S0','SA','SB','SC','SAB','SBC','SCA','S']
-'''
-'''
-# возвращает одну строку датафрейма ТКЗ
-# выводит результаты в виде датафрейма
-def add_line_results(results_df=0, KZ_type='Тип КЗ', line_of_query='объект линии данные которого выписываются' , line="название линии на которой происходит кз", percentage_of_line=0.5, var_list=['U1','U2','U0','3U0','UA','UB','UC','UAB','UBC','UCA','I1','I2','I0','3I0','IA','IB','IC','IAB','IBC','ICA','Z1','Z2','Z0','ZA','ZB','ZC','ZAB','ZBC','ZCA','S1','S2','S0','SA','SB','SC','SAB','SBC','SCA','S'], kaskade=0, p_off=('Полный режим',)):
-    j=0
-    vars12 = []
-    q12=line_q_names(line_of_query) # выводим ненулевые имена узлов линии
-    
-    # создаем подсловари по двум узлам 
-    try:
-        q1 = line_of_query.q1.name
-        vars1 = {} 
-        vars1['Узел'] = q1
-        vars1.update(line_of_query.res1(parnames=var_list)) 
-        vars12.append(vars1)
-        j = j+1
-    except: 1
-        
-    try:
-        q2 = line_of_query.q2.name
-        vars2 = {} 
-        vars2['Узел'] = q2
-        vars2.update(line_of_query.res2(parnames=var_list)) 
-        vars12.append(vars2)
-        j = j+1
-    except: 1
-    
-    for i in range(j):
-        # создаем словари с общими столбцами
-        vars = {}
-        vars['Линия кз'] = line
-        vars['Место кз'] = percentage_of_line
-        vars['Тип кз'] = KZ_type
-        vars['Линия'] = line_of_query.name
-        vars['Каскад'] = kaskade
-        vars['Отключенные ветви'] = [p_off]        
-        
-        # добавляем к ним столбцы выше и переводим это все в DF
-        vars2_lists = {}
-        for k, v in vars12[i].items():
-            # Если значение это np.array с комплексными числами
-            if isinstance(v, np.ndarray) and np.iscomplexobj(v):
-                # Найдем и заменим "nan + nanj" на "0 + 0j"
-                mask = np.isnan(v.real) & np.isnan(v.imag)
-                v[mask] = 0 + 0j
-            # Добавляем в словарь
-            vars2_lists[k] = [v]
-    
-        # Обновляем исходный словарь
-        vars.update(vars2_lists)
-    
-        # Создаем DataFrame
-        df_vars = pd.DataFrame(vars)
-        print(df_vars)
-        
-        
-        vars2_lists = {k: [v] for k, v in vars12[i].items()}
-        
-        vars.update(vars2_lists)
-        
-        df_vars = pd.DataFrame(vars)
-        
-        # добавляем к результирующему DF
-        try:
-            results_df = pd.concat([results_df, df_vars])
-        except: 
-            full_var_list = ['Линия кз', 'Место кз', 'Тип кз', 'Линия', 'Узел', 'Каскад', 'Отключенные ветви'] + var_list
-            results_df = pd.DataFrame(columns = full_var_list) # создаем DF в который будут выводиться результаты
-            results_df = pd.concat([results_df, df_vars])
-        i+=1
-        
-    return results_df
-'''
 
 # возвращает названия узлов линии, не ломаясь об нули
 def line_q_names(line):
@@ -812,53 +639,26 @@ def line_q_names(line):
     return [q1, q2]
 
 
-# Функция выводит датафрейм из защит модели
-'''
-def def_to_df(mdl):
-    df_result = pd.DataFrame()
-    for p in mdl.bp:
-        for q in [p.q1_def, p.q2_def]:
-            for d in q:
-                def_par = {}
-                vars = {}
-                def_par['prot_id'] = d.id
-                def_par['Линия'] = p.name
-                try: def_par['узел'] = d.q.name
-                except: def_par['узел'] = '0'
-                def_par['тип РЗ'] = d.type
-                def_par['№ ступени'] = d.stage
-                def_par['I0_сраб'] = d.I0
-                def_par['t_сраб'] = d.t
-                def_par['Введена ли защита'] = d.stage_on
-                def_par['мощность сраб РНМ'] = d.P_rnm
-                def_par['Введена ли РНМ'] = d.rnm_on
-                def_par['Угол РНМ'] = d.rnm_ang
-                def_par['Kч'] = d.k_ch
-                def_par['Котс'] = d.k_ots
-                def_par['Кв'] = d.k_voz
-
-                def_par_lists = {k: [v] for k, v in def_par.items()}
-                vars.update(def_par_lists)
-                df_res = pd.DataFrame(vars)
-                df_result = pd.concat([df_result, df_res], ignore_index=True)
-
-    return df_result
-'''
 
 
 
-# Функция для составления словаря удаленности линий и узлов от данной линиии
-'''
-mdl - подель поиска
-line - линия от которой отсчитывается расстояние
-n - максимальное расстояние поиска от узла
-return_names - если True возвращет имена линий, вместо объектов
-
-Функция возвращает 2 словаря
-словарь линий с ключами равными номеру пояса и значениями, равными списку линий
-аналогичный словарь узлов
-'''
 def belt_search(mdl, line, n, return_names=False):
+    """
+    Обходит топологию сети по поясам от заданной линии (BFS по рёбрам).
+
+    Пояс k — множество ветвей, достижимых ровно через k шагов от line.
+    Ветвь line исключается из пояса 1.
+
+    Параметры:
+        mdl          -- объект модели сети
+        line         -- исходная ветвь mrtkz.P
+        n            -- максимальное число поясов
+        return_names -- если True, возвращает имена вместо объектов (по умолчанию: False)
+
+    Возвращает:
+        (p_range_dict, q_range_dict) -- словари {пояс: set(ветвей/узлов)},
+        ключ 'line' содержит имя исходной линии
+    """
     p_range_dict = {i: set() for i in range(1, n+1)}
     q_range_dict = {i: set() for i in range(1, n+1)}
     
@@ -898,27 +698,23 @@ def belt_search(mdl, line, n, return_names=False):
         return p_range_dict_names, q_range_dict_names
     else:
         return p_range_dict, q_range_dict
-'''
-# Пример использования:
-mdl = mdl  # ваша модель
-line = mdl.bp[2]  # выбранная линия
-n = 3  # радиус поиска
-
-p_range_dict, q_range_dict = optimized_search(mdl, line, n)
-'''
 
 
 
-# создает списки линий перебирая все линии в словаре, в наборами по m едениц 
-'''
-p_range_dict - словарь линий из предыдущей функции
-m - количество линий в переборе 
-
-show_info - выводит информацию о кол-ве линий и вариантов перебора
-return_as_list - выводит списом, если правда и объектом перебоа, если ложь
-belts_list - список поясов, если нужны не все а только выборочные (напр [0,2])
-'''
 def generate_line_combinations(p_range_dict, m, show_info=True, return_as_list=False, belts_list = ''):
+    """
+    Генерирует все комбинации из m линий на основе словаря поясной структуры.
+
+    Параметры:
+        p_range_dict   -- словарь поясов из belt_search {пояс: set(линий)}
+        m              -- количество одновременно отключаемых линий
+        show_info      -- вывод числа линий и комбинаций (по умолчанию: True)
+        return_as_list -- преобразовать список комбинаций явно в list (по умолчанию: False)
+        belts_list     -- список номеров поясов для включения; '' = все пояса (по умолчанию: '')
+
+    Возвращает:
+        list -- список кортежей, каждый кортеж — набор из m линий
+    """
     all_lines = set()  # Используем множество для уникальности
     
     # вписываем в единую строку те, что есть в belts_list, если он не пустой
@@ -938,6 +734,29 @@ def generate_line_combinations(p_range_dict, m, show_info=True, return_as_list=F
         
     return combinations
 
+
+def line_enumiration(mdl, line, max_belt_range, num_of_enum_lines, list_of_belts_for_enum='', return_names=False, show_info=True, return_as_list=True):
+    """
+    Комбинирует belt_search и generate_line_combinations для перебора вариантов отключений.
+
+    Параметры:
+        mdl                    -- объект модели сети
+        line                   -- исходная ветвь (объект mrtkz.P) для отсчёта поясов
+        max_belt_range         -- максимальный номер пояса для поиска
+        num_of_enum_lines      -- количество одновременно отключаемых линий
+        list_of_belts_for_enum -- список поясов для перебора; '' = все пояса (по умолчанию: '')
+        return_names           -- возвращать имена вместо объектов (по умолчанию: False)
+        show_info              -- вывод информации о числе комбинаций (по умолчанию: True)
+        return_as_list         -- явно преобразовать в list (по умолчанию: True)
+
+    Возвращает:
+        list -- список кортежей вариантов отключений
+    """
+    p = belt_search(mdl=mdl, line=line, n=max_belt_range, return_names=return_names)[0]
+    cmbinations = generate_line_combinations(p_range_dict=p, m=num_of_enum_lines, show_info=show_info, return_as_list=return_as_list, belts_list=list_of_belts_for_enum)
+    return cmbinations
+
+
 def generate_node_coordinates(mdl):
     # функция для генерации координат узлов
     mdl.Calc()
@@ -954,711 +773,11 @@ def generate_node_coordinates(mdl):
     sub_mdl = duplicate_mdl(mdl)
     return sub_mdl
 
-# Функция получающая на вход пояс перебора и количество линий в переборе, и возвращающая список вариантов списов линий
-''' функция объеденияет предыдущие две'''
-def line_enumiration(mdl, line, max_belt_range, num_of_enum_lines, list_of_belts_for_enum='', return_names=False, show_info=True, return_as_list=True):    
-    p = belt_search(mdl=mdl, line=line, n=max_belt_range, return_names=return_names)[0]
-    cmbinations = generate_line_combinations(p_range_dict=p, m=num_of_enum_lines, show_info=show_info, return_as_list=return_as_list, belts_list=list_of_belts_for_enum)
-    return cmbinations
 
-'''
-# создает df по подрежиму
-def q_kz_p_del_mdl(mdl, line, p_off, percentage_of_line, KZ_type, var_list, show_G=False):
-    results_df = 0
-    # Создание подмодели с определенными параметрами
-    submdl = kz_q(mdl, line, percentage_of_line=percentage_of_line, show_G=False, show_par=False, kaskade=False)
-    submdl = p_del(submdl, del_p_name=p_off, show_G=show_G, show_par=False)
-    # Выполнение расчетов для подмодели
-    KZ1 = mrtkz.N(submdl, 'KZ', submdl.bq[-1], KZ_type)
-    # Запуск расчетов подмодели
-    submdl.Calc()
-    # Добавление результатов в DataFrame
-    for p in submdl.bp:
-        results_df = add_line_results(results_df=results_df, 
-                                           KZ_type=KZ_type, 
-                                           line_of_query=p, 
-                                           line=line.name, 
-                                           percentage_of_line=percentage_of_line, 
-                                           var_list=var_list, 
-                                           kaskade=0, 
-                                           p_off=p_off)
-    # Выполнение запроса на отбор данных по определенной линии
-    results_df.loc[results_df['Линия'] == line.name]
-    return results_df
-
-# создает подрежим, считает его и возвращает результаты по строке df base_df
-def df_row_calc_df(base_mdl, base_df_row, show_G=False):
-    line = p_search(mdl, p_name=base_df_row['Линия кз'][0])
-    p_off = base_df_row['Отключенные ветви'][0]
-    percentage_of_line = base_df_row['Место кз'][0]
-    KZ_type = base_df_row['Тип кз'][0]
-    var_list = [item for item in base_df_row.columns if item not in ['Линия кз', 'Место кз', 'Тип кз', 'Линия', 'Узел', 'Каскад', 'Отключенные ветви']]
-    res_df = q_kz_p_del_mdl(mdl=mdl, line=mdl.bp[2], p_off=('Sys2','PS1-PS3',), percentage_of_line=0.5, KZ_type='A0', var_list=['I0','S0'], show_G=True)
-    return res_df
-'''
-
-
-# Анализ защит дальн рез когда починю рассчет токов, добавить рассчет токов кз
-# нужно добавить ограничение анализа узлов, хотя лучше его добавить в функции таблицы ткз и достройки режима внутри функции
-'''
-import cmath
-def check_rnm_df(df_row):
-    I0 = df_row['I0'].values[0]
-    U0 = df_row['U0'].values[0]
-    S0 = U0 * np.conj(I0)
-    S0_angle = cmath.phase(S0) * 180 / np.pi
-    angle_diff = abs((S0_angle - df_row['угол макс РНМ'] + 180) % 360 - 180)
-    
-    if angle_diff > 90:
-        return False
-    
-    if abs(S0) <= df_row['мощность сраб РНМ'] / np.cos(np.radians(angle_diff)):
-        return False
-    return True
-    '''
-'''
-def analyze_remote_backup_protection(mdl, def_df, base_df, line_kz, print_log = False):
-    # Создаем DataFrame для хранения результатов анализа
-    results = pd.DataFrame(columns=['Линия КЗ', 'Тип КЗ', 'Место КЗ', 'Сработавшая защита', 
-                                'Ступень защиты', 'Ток срабатывания', 'Ток КЗ', 'Время срабатывания', 'Отключенные линии', 'Группа отключения', 'Пояс'])
-    
-    # Перебираем все уникальные комбинации типа КЗ, места КЗ и отключенных ветвей для заданной линии КЗ
-    for (kz_type, kz_percent, kz_off_lines), kz_group in base_df[base_df['Линия кз'] == line_kz].groupby(['Тип кз', 'Место кз', 'Отключенные ветви']):
-        kz_off_lines = kz_off_lines
-        j=0
-        past_total_time = 0
-        total_time = 0
-        tripped_lines = set()
-        current_data = kz_group
-        
-        # Определяем узлы линии КЗ и список линий первого пояса
-        kz_q12 = base_df.loc[(base_df['Линия']==line_kz)]['Узел'].unique()
-        kz_1_belt_lines_list = base_df.loc[base_df['Узел'].isin(kz_q12)]['Линия'].unique()
-        belt_lines_count = len(kz_1_belt_lines_list)
-
-
-        kz_q12 = base_df.loc[(base_df['Линия']==line_kz)]['Узел'].unique()
-        kz_1_belt_lines_list = base_df.loc[base_df['Узел'].isin(kz_q12)]['Линия'].unique()
-        elements_to_remove = ['q1-kz', 'kz-q2', line_kz]
-        kz_1_belt_lines_tuple = (tuple(item for item in kz_1_belt_lines_list if item not in elements_to_remove))
-
-        
-        if print_log: print(f"Анализ КЗ: Линия {line_kz}, Тип {kz_type}, Место {kz_percent}, Отключенные ветви {kz_off_lines}")
-        
-        # Выбираем все активные защиты, кроме защит линии КЗ, и сортируем их по времени срабатывания
-        all_protections = def_df[(def_df['Введена ли защита'] == True) & (def_df['Линия'] != line_kz)].sort_values('t_сраб')
-        all_protections['Времени до срабатывания'] = all_protections['t_сраб']        
-        all_protections['Сработала'] = False  
-        all_protections.reset_index(drop=True, inplace=True)        
-        off_lines = kz_off_lines
-        distant_belts_off_lines = []
-        while True:
-            all_protections['Почувствовала'] = False   
-            off = False
-            if current_data.empty:
-                if print_log: print("Нет данных для анализа")
-                break
-                
-            past_total_time = total_time
-            
-            j+=1
-            i=-1
-            # Проверяем каждую защиту
-            for _, prot in all_protections.iterrows():
-                temp_off_lines = ()
-                i+=1
-                line = prot['Линия']
-                node = prot['узел']
-                
-                # Пропускаем уже отключенные линии
-                if line in off_lines or line in distant_belts_off_lines:
-                    #print('Пропущена защита', line)
-                    continue
-                
-                # Находим соответствующую строку данных для текущей защиты
-                row = current_data[(current_data['Линия'] == line) & (current_data['Узел'] == node)]
-                
-                if row.empty:
-                    continue
-                
-                # Извлекаем значения тока и мощности
-                I0 = complex(row['I0'].values[0])
-                S0 = complex(row['S0'].values[0])
-                
-                protection_key = f"{line}|{node}-{prot['№ ступени']}"
-                
-                # Проверяем условие срабатывания РНМ, если оно введено
-                rnm_check_passed = True
-                if prot['Введена ли РНМ']:
-                    rnm_check_passed = check_rnm_I_df(row, prot)#check_rnm(S0, prot['мощность сраб РНМ'], prot['угол РНМ'])
-                    
-                if rnm_check_passed:
-                    # Вычисляем уставки по току с учетом коэффициентов чувствительности и отстройки
-                    Kch_I0 = prot['I0_сраб']/prot['Kч']
-                    Kots_I0 = prot['I0_сраб']/prot['Котс']
-                    
-                    # Проверяем условия срабатывания защиты
-                    if line in kz_1_belt_lines_tuple and abs(I0) > Kch_I0 or line not in kz_1_belt_lines_tuple and abs(I0) > Kots_I0:
-                        #prot['Почувствовала']=True
-                        all_protections.loc[i,'Почувствовала'] = True
-                        #print(protection_key)
-                    elif abs(I0) <= prot['I0_сраб']*prot['Кв']:
-                        #prot['Времени до срабатывания'] = prot['t_сраб']
-                        all_protections.loc[i,'Времени до срабатывания']= prot['t_сраб']
-                    # Здесь нужно добавить логику для обработки protection_start_times
-                    # if protection_key not in protection_start_times:
-                    #     protection_start_times[protection_key] = total_time
-                else:
-                    prot['Времени до срабатывания'] = prot['t_сраб']
-                    #prot['Времени до срабатывания'] = prot['t_сраб']
-                    all_protections.loc[i,'Времени до срабатывания']= prot['t_сраб']
-            # Сортируем защиты по времени срабатывания
-            all_protections = all_protections.sort_values(by='Времени до срабатывания')
-            # Находим время срабатывания ближайшей защиты первого пояса
-            #a = all_protections.loc[all_protections['Почувствовала']].count()[0]
-            #print('ПОЧУВСТВ',a)
-            
-            try:
-                total_time = all_protections.loc[(all_protections['Линия'].isin(kz_1_belt_lines_tuple)) & (all_protections['Почувствовала'])].head(1)['Времени до срабатывания'].values[0]
-            except:
-                try: belt = row['Пояс'].values[0]
-                except: belt = 4
-                new_result = pd.DataFrame({
-                        'Линия КЗ': [line_kz],
-                        'Тип КЗ': [kz_type],
-                        'Место КЗ': [kz_percent],
-                        'Сработавшая защита': [f"Защиты не чувствуют"],
-                        'Ступень защиты': [0],
-                        'Ток срабатывания': [0],
-                        'Ток КЗ': [0],
-                        'Время срабатывания': [total_time],
-                        'Отключенные линии': [off_lines],
-                        'Группа отключения': [j],
-                        'Пояс': [belt] })
-                if print_log: print(f"КЗ не отключено:{temp_off_lines} ")
-                results = pd.concat([results, new_result], ignore_index=True)
-                off = True      
-            
-            if off == True:
-                break
-            # Отмечаем сработавшие защиты
-            distant_belts_off_lines += all_protections.loc[(all_protections['Времени до срабатывания'] <= total_time) & (all_protections['Почувствовала']),'Линия'].unique().tolist()
-            # Выделяем сработавшие защиты в отдельный DataFrame
-            worked_protections = all_protections.loc[(all_protections['Времени до срабатывания'] <= total_time) & (all_protections['Почувствовала'])]
-            # Уменьшаем время до срабатывания для оставшихся активных защит
-            all_protections.loc[(all_protections['Времени до срабатывания'] > total_time) & (all_protections['Почувствовала']), 'Времени до срабатывания'] -= total_time
-            
-           
-            
-            
-            # Записываем результаты сработавших защит
-            for _, protection in worked_protections.iterrows():
-                line = protection['Линия']
-                node = protection['узел']
-                row = current_data[(current_data['Линия'] == line) & (current_data['Узел'] == node)]
-                try: belt = row['Пояс'].values[0]
-                except: belt = 4
-                #print(row['I0'])
-                try: I0 = complex(row['I0'].values[0])
-                except: I0 = 0
-                trip_time = past_total_time + protection['Времени до срабатывания']
-
-                new_result = pd.DataFrame({
-                            'Линия КЗ': [line_kz],
-                            'Тип КЗ': [kz_type],
-                            'Место КЗ': [kz_percent],
-                            'Сработавшая защита': [f"{line} | {node}"],
-                            'Ступень защиты': [protection['№ ступени']],
-                            'Ток срабатывания': [protection['I0_сраб']],
-                            'Ток КЗ': [abs(I0)],
-                            'Время срабатывания': [trip_time],
-                            'Отключенные линии': [off_lines],
-                            'Группа отключения': [j],
-                            'Пояс': [belt] })
-                results = pd.concat([results, new_result], ignore_index=True)
-                #print(f"Сработала защита: {line} | {node}, время: {trip_time}")
-                
-                # Если сработавшая защита относится к линии первого пояса, записываем ее
-                if line in kz_1_belt_lines_tuple:
-                    temp_off_lines += (line,)
-                    temp_off_lines = tuple(temp_off_lines)
-                    belt_lines_count -= 1
-                    if print_log: print(f"Отключены линии: {line}, время: {total_time}, линий осталось {belt_lines_count}")
-
-            if print_log: print(f"Отключены линии:{temp_off_lines} за шаг {j}")
-
-            #  Добавляем отключенные за этот шаг линии к отключенным и меняем подрежим
-            off_lines = tuple(off_lines) + temp_off_lines
-            if print_log: print(f"Отключен линии ВСЕГО:{off_lines} за шаг {j}")
-            belt_lines_count -= 1
-            # Переходим к новому подрежиму после отключения линий
-            line_kz_obj = p_search(mdl, p_name=line_kz)
-            var_list = [item for item in base_df.columns if item not in ['Линия кз', 'Место кз', 'Тип кз', 'Линия', 'Узел', 'Каскад', 'Отключенные ветви']]
-            current_data = q_kz_p_del_mdl(mdl=mdl, line=line_kz_obj, p_off=off_lines, percentage_of_line=kz_percent, KZ_type=kz_type, var_list=['I0','S0'], show_G=False)
-
-                    
-            
-            #print(kz_line_data)
-            # Проверяем условия завершения анализа
-            kz_line_data = current_data[current_data['Линия'].isin(["kz-q2", "q1-kz"])]
-            kz_line_data['I0'] = kz_line_data['I0'].apply(lambda x: complex(x) if isinstance(x, str) else x)    
-            
-            if all(item in off_lines for item in kz_1_belt_lines_tuple):
-                if print_log: print("Все линии первого пояса отключены")
-                if print_log: print(f"Всего строк в результате: {len(results)}")               
-                break
-                
-
-            elif (all(abs(kz_line_data['I0']) < 1e-6)): #and all(abs(kz_line_data['S0']) < 1e-6)):
-                if print_log: print("Ток и напряжение в обоих узлах линии КЗ стали нулевыми")
-                if print_log: print(f"Всего строк в результате: {len(results)}")               
-                break
-            
-    return results
-
-# Пример использования функции
-base_df.reset_index(drop=True, inplace=True) 
-def_df.reset_index(drop=True, inplace=True) 
-#result_df = analyze_remote_backup_protection(mdl, def_df, base_df, 'PS1-PS2')
-#print(result_df)
-'''
 
 # Отстройка от тока небаланса трехфазных кз. работает, но возвращает результат в виде df, нужно интегрировать в программу
-'''
-def I3f_ots(mdl, line):
-    """
-    Выполняет расчет токов нулевой последовательности в линии при 
-    трехфазном коротком замыкании в точках q1 и q2.
-
-    Параметры:
-    mdl : object
-        Модель системы, на которой выполняется расчет.
-    line : object
-        Линия, для которой производится расчет токов.
-
-    Возвращает:
-    tuple : (q1_IA, q2_IA)
-        q1_IA : float
-            Абсолютное значение тока в точке q1.
-        q2_IA : float
-            Абсолютное значение тока в точке q2.
-    """
-    # Создаем дубликат модели для проведения расчетов
-    submdl = duplicate_mdl(mdl)
-    # Находим линию в модели по её имени
-    line = p_search(submdl, p_name=line.name)
-    try:     
-        # Создаем 3-фазное короткое замыкание на конце q1 линии
-        KZ1 = mrtkz.N(submdl, 'KZ1', line.q1, 'ABC')
-        # Выполняем расчет токов в модели
-        submdl.Calc()
-        # Извлекаем имя узла q1 и значение тока IA в узле q1
-        q1_name = line.q1.name
-        q1_IA = abs(line.res1(parnames=['IA'])['IA'])
-    except: 
-        # Если произошла ошибка, устанавливаем ток в 0
-        q1_IA = 0
-    
-    # Создаем новый дубликат модели для проведения второго расчета
-    submdl = duplicate_mdl(mdl)
-    # Находим линию в модели по её имени
-    line = p_search(submdl, p_name=line.name)
-    try:    
-        # Создаем 3-фазное короткое замыкание на конце q2 линии
-        KZ1 = mrtkz.N(submdl, 'KZ1', line.q2, 'ABC')
-        # Выполняем расчет токов в модели
-        submdl.Calc()
-        # Извлекаем имя узла q2 и значение тока IA в узле q2
-        q2_name = line.q2.name
-        q2_IA = abs(line.res1(parnames=['IA'])['IA'])
-    except: 
-        # Если произошла ошибка, устанавливаем ток в 0
-        q2_IA = 0
-    
-    # Возвращаем значения токов для узлов q1 и q2
-    return q1_IA, q2_IA
-
-def kz_3f_ots_to_result_df(mdl, base_df, def_df, print_log=False):
-    """
-    Выполняет анализ срабатывания защит при трехфазных коротких замыканиях
-    и возвращает результаты в виде DataFrame.
-
-    Параметры:
-    mdl : object
-        Модель системы, на которой выполняется анализ.
-    base_df : DataFrame
-        Базовый DataFrame, содержащий информацию об отключениях линий.
-    def_df : DataFrame
-        DataFrame с параметрами защит, которые необходимо проверить.
-    print_log : bool, optional
-        Если True, выводит в лог промежуточные результаты (по умолчанию False).
-
-    Возвращает:
-    DataFrame
-        DataFrame с результатами срабатывания защит, содержащий следующие столбцы:
-        - 'Линия КЗ': Линия, на которой произошло КЗ.
-        - 'Тип КЗ': Тип КЗ (в данном случае 'Отстройка от 3ф кз').
-        - 'Место КЗ': Процент КЗ относительно длины линии.
-        - 'Сработавшая защита': Описание сработавшей защиты.
-        - 'Ступень защиты': Номер ступени защиты.
-        - 'Ток срабатывания': Ток, при котором сработала защита.
-        - 'Ток КЗ': Вычисленный ток короткого замыкания.
-        - 'Время срабатывания': Время срабатывания защиты.
-        - 'Отключенные линии': Ветви, отключенные при анализе.
-        - 'Группа отключения': Группа отключения (в данном случае всегда 0).
-    """
-    
-    # Создаем пустой DataFrame для хранения результатов
-    results = pd.DataFrame(columns=['Линия КЗ', 'Тип КЗ', 'Место КЗ', 'Сработавшая защита', 
-                                    'Ступень защиты', 'Ток срабатывания', 'Ток КЗ', 
-                                    'Время срабатывания', 'Отключенные линии', 'Группа отключения', 'Пояс']) 
-    
-    # Перебираем все линии в модели
-    for line in mdl.bp:
-        try: 
-            # Пытаемся получить узел q1 для линии
-            q1 = line.q1
-        except: 
-            # Если ошибка, устанавливаем q1 в '0'
-            q1 = '0'
-        
-        try: 
-            # Пытаемся получить узел q2 для линии
-            q2 = line.q2
-        except: 
-            # Если ошибка, устанавливаем q2 в '0'
-            q2 = '0'
-        
-        # Получаем уникальные комбинации отключенных ветвей для текущей линии КЗ
-        submdls_lines_off = base_df.loc[base_df['Линия кз'] == line.name, 'Отключенные ветви'].unique()
-        
-        # Перебираем все комбинации отключенных ветвей
-        for del_p_tuple in submdls_lines_off:
-            # Создаем подмодель с отключенными ветвями
-            submdl = p_del(mdl=mdl, del_p_name=del_p_tuple, show_G=False, show_par=False)
-            # Вычисляем токи в узлах q1 и q2 для этой подмодели
-            I12, I21 = I3f_ots(submdl, line)
-    
-            # Фильтруем защитные устройства, которые привязаны к данной линии и имеют время срабатывания <= 1 с
-            temp_def = def_df.loc[(def_df["Линия"] == line.name) & (def_df["t_сраб"] <= 1)]
-            
-            # Перебираем каждое защитное устройство
-            for _, prot in temp_def.iterrows():
-                # Устанавливаем начальное значение коэффициента нагрузки блока (knb)
-                knb = 0.07
-                # Получаем узел, в котором установлено защитное устройство
-                node = prot['узел']
-                # Получаем время срабатывания защитного устройства
-                t = prot["t_сраб"]
-                
-                # Определяем коэффициент чувствительности от времени срабатывания
-                if t <= 0.1:
-                    kper = 2
-                elif t < 0.5:
-                    kper = 1.5
-                else:
-                    kper = 1
-                
-                # Проверяем, введена ли защита от несимметричных токов
-                if prot['Введена ли РНМ']:
-                    if node == q1:
-                        # Если узел защиты совпадает с узлом q1, берем ток I21 и устанавливаем процент КЗ в 1
-                        I = I21
-                        kz_percent = 1
-                    if prot['узел'] == q2:
-                        # Если узел защиты совпадает с узлом q2, берем ток I12 и устанавливаем процент КЗ в 0
-                        I = I12
-                        kz_percent = 0
-                else:
-                    # Если защита от несимметричных токов не введена, берем максимальный ток и устанавливаем процент КЗ в 0
-                    I = max(I12, I21)
-                    kz_percent = 0
-                
-                # Вычисляем ток срабатывания защиты с учетом коэффициентов
-                Iots = prot['Котс'] * kper * I * knb
-                if print_log: 
-                    # Логируем значения токов для отладки, если включен флаг print_log
-                    print(Iots, I21, I21)
-                
-                # Проверяем, превышает ли вычисленный ток ток срабатывания защиты
-                if Iots >= prot['I0_сраб']:
-                    if print_log: 
-                        # Логируем факт срабатывания защиты, если включен флаг print_log
-                        print('Сработала')
-                    
-                    # Формируем запись о срабатывании защиты
-                    new_result = pd.DataFrame({
-                        'Линия КЗ': [line.name],
-                        'Тип КЗ': ['Отстройка от 3ф кз'],
-                        'Место КЗ': [kz_percent],
-                        'Сработавшая защита': [f"{line.name} - {node}"],
-                        'Ступень защиты': [prot['№ ступени']],
-                        'Ток срабатывания': [prot['I0_сраб']],
-                        'Ток КЗ': [Iots],
-                        'Время срабатывания': [prot['t_сраб']],
-                        'Отключенные линии': [del_p_tuple],
-                        'Группа отключения': [0],
-                        'Пояс': [10] })
-                    
-                    # Добавляем новую запись в результирующий DataFrame
-                    results = pd.concat([results, new_result], ignore_index=True)        
-    
-    # Возвращаем результирующий DataFrame с информацией о срабатывании защит
-    return results
-'''
 
 # Старое ближнее резервирование, работает долго, на основании df с токами срабатывания.
-'''
-def check_rnm_I_df(row, prot):
-    I0 = row['I0'].values[0]
-    S0 = row['S0'].values[0]
-    S0_angle = cmath.phase(S0) * 180 / np.pi
-    angle_diff = abs((S0_angle - prot['угол макс РНМ'] + 180) % 360 - 180)
-    
-    if angle_diff > 90:
-        return False
-    
-    if abs(S0) <= prot['мощность сраб РНМ'] / np.cos(np.radians(angle_diff)):
-        return False
-    return True
-    
-def analyze_I_protection(mdl, def_df, base_df, line_kz, print_log = False):
-    # Создаем DataFrame для хранения результатов анализа
-    results = pd.DataFrame(columns=['Линия КЗ', 'Тип КЗ', 'Место КЗ', 'Сработавшая защита', 
-                                'Ступень защиты', 'Ток срабатывания', 'Ток КЗ', 'Время срабатывания', 'Отключенные линии', 'Группа отключения', 'Пояс'])
-    
-    # Перебираем все уникальные комбинации типа КЗ, места КЗ и отключенных ветвей для заданной линии КЗ
-    for (kz_type, kz_percent, kz_off_lines), kz_group in base_df[base_df['Линия кз'] == line_kz].groupby(['Тип кз', 'Место кз', 'Отключенные ветви']):
-        j=0
-        past_total_time = 0
-        total_time = 0
-        tripped_lines = set()
-        current_data = kz_group.loc[kz_group['Каскад']==0]
-        try: q1_name = p_search(mdl=mdl,p_name=line_kz).q1.name
-        except: q1_name = '0'
-        try: q2_name = p_search(mdl=mdl,p_name=line_kz).q2.name
-        except: q2_name = '0'             
-        q1_off = False
-        q2_off = False
-        
-        # Определяем узлы линии КЗ и список линий первого пояса
-        #kz_q12 = base_df.loc[(base_df['Линия']==line_kz)]['Узел'].unique()
-        #kz_1_belt_lines_list = base_df.loc[base_df['Узел'].isin(kz_q12)]['Линия'].unique()
-        #belt_lines_count = len(kz_1_belt_lines_list)
-
-
-        kz_q12 = base_df.loc[(base_df['Линия']==line_kz)]['Узел'].unique()
-        #kz_1_belt_lines_list = base_df.loc[base_df['Узел'].isin(kz_q12)]['Линия'].unique()
-        elements_to_remove = ['q1-kz', 'kz-q2', line_kz]
-        #kz_1_belt_lines_tuple = (tuple(item for item in kz_1_belt_lines_list if item not in elements_to_remove))
-        
-        
-        if print_log: print(f"Анализ КЗ: Линия {line_kz}, Тип {kz_type}, Место {kz_percent}, Отключенные ветви {kz_off_lines}")
-        
-        # Выбираем все активные защиты, и сортируем их по времени срабатывания
-        all_protections = def_df[(def_df['Введена ли защита'] == True)].sort_values('t_сраб')
-        all_protections['Времени до срабатывания'] = all_protections['t_сраб']        
-        all_protections['Сработала'] = False  
-        all_protections.reset_index(drop=True, inplace=True)        
-        off_lines = kz_off_lines
-        distant_belts_off_lines = []
-        while True:
-            
-            all_protections['Почувствовала'] = False   
-            off = False
-            if current_data.empty:
-                if print_log: print("Нет данных для анализа")
-                break
-                
-            past_total_time = total_time
-            
-            j+=1
-            i=-1
-            # Проверяем каждую защиту
-            for _, prot in all_protections.iterrows():
-                test_print=False
-                temp_off_lines = ()
-                i+=1
-                line = prot['Линия']
-                node = prot['узел']
-                # Пропускаем уже отключенные линии
-                if line in distant_belts_off_lines:
-                    continue
-                if line == line_kz and node == q1_name and q1_off==True:
-                    continue
-                if line == line_kz and node == q2_name and q2_off==True:
-                    continue    
-                # Находим соответствующую строку данных для текущей защиты
-                if line == line_kz and node == q1_name and q1_off==False:
-                    row = current_data[(current_data['Линия'] =='q1-kz') & (current_data['Узел'] == q1_name)]
-                    #test_print = True
-                    #if test_print: print(f'анализ защиты {line}|{node} возле if')
-                elif line == line_kz and node == q2_name and q2_off== False:
-                    row = current_data[(current_data['Линия'] == 'kz-q2') & (current_data['Узел'] == q2_name)]
-                    #test_print = True
-                    #print('!!! Начат анализ защиты', line, '|', node)
-                else:
-                    row = current_data[(current_data['Линия'] == line) & (current_data['Узел'] == node)]
-                    #print(row['I0'])
-                #print('!!! Начат анализ защиты 3', line, '|', node)
-                if row.empty:
-                    continue
-                
-                # Извлекаем значения тока и мощности
-                I0 = row['I0'].values[0]
-                I0 = complex(I0)
-                S0 = row['S0'].values[0]
-                S0 = complex(I0)
-                
-                protection_key = f"{line}|{node}-{prot['№ ступени']}"
-                if test_print: print(f'анализ защиты {line}|{node}')
-                # Проверяем условие срабатывания РНМ, если оно введено
-                rnm_check_passed = True
-                if prot['Введена ли РНМ']:
-                    rnm_check_passed = check_rnm_I_df(row, prot)#check_rnm(S0, prot['мощность сраб РНМ'], prot['угол РНМ'])
-                    
-                if rnm_check_passed:
-                    #if test_print: print(f'РНМ сработал, пошел анализ {protection_key} токи уст {Kch_I0} факт {abs(I0)}')
-                    # Вычисляем уставки по току с учетом коэффициентов чувствительности и отстройки
-                    Kch_I0 = prot['I0_сраб']/prot['Kч']
-                    Kots_I0 = prot['I0_сраб']/prot['Котс']
-                    
-                    # Проверяем условия срабатывания защиты
-                    if (line == line_kz and abs(I0) >= Kch_I0):
-                        #if test_print: print(f'выполнены условия срабатывания защиты {protection_key} ток {abs(I0)}  уставка с кч {Kch_I0}')
-                        #prot['Почувствовала']=True
-                        all_protections.loc[i,'Почувствовала'] = True
-                        #print(protection_key)
-                    
-                    if (line != line_kz and abs(I0) >= Kots_I0):
-                        #if test_print: 
-                        #print(f'выполнены условия срабатывания защиты {protection_key} ток {abs(I0)} уставка с кots {Kots_I0}')
-                        #prot['Почувствовала']=True
-                        all_protections.loc[i,'Почувствовала'] = True
-                        #print(protection_key)
-
-                    
-                    elif abs(I0) <= prot['I0_сраб']*prot['Кв']:
-                        #if test_print: print(f'реле отпало по току c {protection_key} токи уст {Kch_I0} факт {abs(I0)}')
-                        #prot['Времени до срабатывания'] = prot['t_сраб']
-                        all_protections.loc[i,'Времени до срабатывания']= prot['t_сраб']
-                    # Здесь нужно добавить логику для обработки protection_start_times
-                    # if protection_key not in protection_start_times:
-                    #     protection_start_times[protection_key] = total_time
-                else:
-                    prot['Времени до срабатывания'] = prot['t_сраб']
-                    #prot['Времени до срабатывания'] = prot['t_сраб']
-                    all_protections.loc[i,'Времени до срабатывания']= prot['t_сраб']
-            # Сортируем защиты по времени срабатывания
-            all_protections = all_protections.sort_values(by='Времени до срабатывания')
-            # Находим время срабатывания ближайшей защиты первого пояса
-            #a = all_protections.loc[all_protections['Почувствовала']].count()[0]
-                
-
-            try:
-                total_time = all_protections.loc[(all_protections['Линия'] == line_kz) & (all_protections['Почувствовала'])].head(1)['Времени до срабатывания'].values[0]
-                x = all_protections.loc[(all_protections['Линия'] == line_kz) & (all_protections['Почувствовала'])].count()[0]    
-
-            except:
-                try: belt = row['Пояс'].values[0]
-                except: belt = 4
-                new_result = pd.DataFrame({
-                        'Линия КЗ': [line_kz],
-                        'Тип КЗ': [kz_type],
-                        'Место КЗ': [kz_percent],
-                        'Сработавшая защита': [f"Защиты не чувствуют"],
-                        'Ступень защиты': [0],
-                        'Ток срабатывания': [0],
-                        'Ток КЗ': [0],
-                        'Время срабатывания': [total_time],
-                        'Отключенные линии': [off_lines],
-                        'Группа отключения': [j],
-                        'Пояс': [belt] })
-                if print_log: print(f"КЗ не отключено:{off_lines} ")
-                results = pd.concat([results, new_result], ignore_index=True)
-                off = True      
-
-            if off == True:
-                break
-            # Отмечаем сработавшие защиты
-            distant_belts_off_lines += all_protections.loc[(all_protections['Времени до срабатывания'] <= total_time) & (all_protections['Почувствовала']) & (all_protections['Линия'] != line_kz),'Линия'].unique().tolist()
-            # Выделяем сработавшие защиты в отдельный DataFrame
-            worked_protections = all_protections.loc[(all_protections['Времени до срабатывания'] <= total_time) & (all_protections['Почувствовала'])]
-            # Уменьшаем время до срабатывания для оставшихся активных защит
-            all_protections.loc[(all_protections['Времени до срабатывания'] > total_time) & (all_protections['Почувствовала']), 'Времени до срабатывания'] -= total_time
-            
-            
-            
-            
-            # Записываем результаты сработавших защит
-            for _, protection in worked_protections.iterrows():
-                line = protection['Линия']
-                node = protection['узел']
-                # Находим соответствующую строку данных для текущей защиты
-                if line == line_kz and node == q1_name and q1_off==False:
-                    row = current_data[(current_data['Линия'] == 'q1-kz') & (current_data['Узел'] == q1_name)]
-                    #print('q1_I0')
-                    q1_off =True
-                    #I0 = complex(row['I0'].values[0])
-                    #print(f'выполнены условия срабатывания защиты {line} ток {abs(I0)}  уставка с кч {Kch_I0}')
-                    current_data = kz_group.loc[kz_group['Каскад']==1]
-                    if print_log: print(f"Отключена линия КЗ {line_kz} со стороны {node}, время: {total_time}")
-                elif line == line_kz and node == q2_name and q2_off== False:
-                    row = current_data[(current_data['Линия'] =='kz-q2') & (current_data['Узел'] == q2_name)]
-                    q2_off =True
-                    current_data = kz_group.loc[kz_group['Каскад']==2]
-                    if print_log: print(f"Отключена линия КЗ {line_kz} со стороны {node}, время: {total_time}")
-                else:
-                    row = current_data[(current_data['Линия'] == line) & (current_data['Узел'] == node)]
-                
-                #print(row['I0'])
-                try: I0 = complex(row['I0'].values[0])
-                except: I0 = 0
-                trip_time = past_total_time + protection['Времени до срабатывания']
-                try: belt = row['Пояс'].values[0]
-                except: belt = 4
-                new_result = pd.DataFrame({
-                            'Линия КЗ': [line_kz],
-                            'Тип КЗ': [kz_type],
-                            'Место КЗ': [kz_percent],
-                            'Сработавшая защита': [f"{line} | {node}"],
-                            'Ступень защиты': [protection['№ ступени']],
-                            'Ток срабатывания': [protection['I0_сраб']],
-                            'Ток КЗ': [abs(I0)],
-                            'Время срабатывания': [trip_time],
-                            'Отключенные линии': [off_lines],
-                            'Группа отключения': [j],
-                            'Пояс': [belt] })
-                results = pd.concat([results, new_result], ignore_index=True)
-            """       
-            # Проверяем условия завершения анализа
-            kz_line_data = current_data[current_data['Линия'].isin(["kz-q2", "q1-kz"])]
-            #print(kz_line_data)
-            if (q1_off and q2_off) or (q1_off and q2_name=='0') or (q2_off and q1_name=='0'):
-                if print_log: print("Линия кз отключена")
-                if print_log: print(f"Всего строк в результате: {len(results)}")                   
-                break      
-            """
-            #print(kz_line_data)
-            # Проверяем условия завершения анализа
-            kz_line_data = current_data[current_data['Линия'].isin(["kz-q2", "q1-kz"])]
-            kz_line_data['I0'] = kz_line_data['I0'].apply(lambda x: complex(x) if isinstance(x, str) else x)    
-            
-            if (q1_off and q2_off) or (q1_off and q2_name=='0') or (q2_off and q1_name=='0'):
-                if print_log: print("Линия кз отключена")
-                if print_log: print(f"Всего строк в результате: {len(results)}")                   
-                break    
-                
-
-            elif (all(abs(kz_line_data['I0']) < 1e-6)): #and all(abs(kz_line_data['S0']) < 1e-6)):
-                if print_log: print("Ток и напряжение в обоих узлах линии КЗ стали нулевыми")
-                if print_log: print(f"Всего строк в результате: {len(results)}")               
-                break
-    
-    
-    return results
-
-'''
 
 
 #                                Группа функций для рисования границы срабатывания защиты
