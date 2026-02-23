@@ -774,15 +774,7 @@ def generate_node_coordinates(mdl):
     return sub_mdl
 
 
-
-# Отстройка от тока небаланса трехфазных кз. работает, но возвращает результат в виде df, нужно интегрировать в программу
-
-# Старое ближнее резервирование, работает долго, на основании df с токами срабатывания.
-
-
 #                                Группа функций для рисования границы срабатывания защиты
-
-
 
 # ФУНКЦИЯ НАХОДИТ ГРАНИЦЫ СТРАБАТЫВАНИЯ ЗАЩИТЫ В УЗЛЕ Q ЛИНИИ LINE ПРИ КЗ В УЗЛЕ P
 def find_tehe_def_edge(mdl, line, q, p, step, prot_stage, log=False):
@@ -1149,46 +1141,3 @@ def mdl_belts_full_dict(mdl, is_name=True):
         else:
             mdl_belts_full_list[p.id] = belts_full_list(p)
     return mdl_belts_full_list
-
-'''
-# легаси функция, сейчас выполняется через ktkz.print_G(mdl, I=True)
-# Выводит визуализацию графа с токами и направлениями
-def vis_I0_graph(mdl):
-    mdl.Calc()
-    G = mdl.G
-    label_dict = {}
-    for p in mdl.bp:
-        if p.q1!=0: q1_name = p.q1.name
-        else:       q1_name = p.name+'_0'
-            
-        if p.q2!=0: q2_name = p.q2.name
-        else:       q2_name = p.name+'_0'
-            
-        I0 = p.res1(['I0'], 'M')['I0']
-        ang = p.res1(['I0'], '<f')['I0']
-        if ((-20 <= ang <= 160) or (340 <= ang <= 360)):
-            way = '->'
-        else:
-            way= '<-'
-        line_label = q1_name + way + q2_name + '\n' + 'I0=' + str(round(I0))
-        #line_label += '\n'+str(p.Z[2])
-        #print(line_label)
-        for pg in mdl.G.edges:
-            if (q1_name, q2_name) == pg or (q2_name, q1_name) == pg: 
-                line_g = pg
-        # Добавление лейбла к конкретному ребру
-        label_dict[line_g] = line_label
-    
-    
-    #print(label_dict)   
-    nx.set_edge_attributes(G, label_dict, 'label')
-    pos = nx.get_node_attributes(mdl.G, 'pos')
-    
-    nx.draw(mdl.G, pos, with_labels=True, node_color='lightblue', node_size=500, font_size=10, font_weight='bold')
-    edge_labels = nx.get_edge_attributes(mdl.G, 'label')
-    nx.draw_networkx_edge_labels(mdl.G, pos, edge_labels=edge_labels, font_size=8, bbox=dict(boxstyle="round",pad=0, edgecolor='none', alpha=0))
-    
-    plt.title("Участок энергосистемы")
-    plt.axis('off')
-    plt.show()
-'''
