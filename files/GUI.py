@@ -915,6 +915,7 @@ class PowerGridOptimizationApp(tk.Tk):
             'non_select_dist': self.non_select_dist_var.get(),
             'k_loss_time_dist': self.k_loss_time_dist_var.get(),
             'k_loss_k_ch_dist': self.k_loss_k_ch_dist_var.get(),
+            'range_prot_analyse': self.dist_prot_anl_var.get(),
         }
 
 
@@ -982,25 +983,29 @@ class PowerGridOptimizationApp(tk.Tk):
         submdl = kar_opt.calc_first_stage(mdl, submdl_dict, k_ots)
         if extended_log:
             self.log_queue.put('\nОтстраиваем первую ступень во всех подрежимах (calc_first_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"],1)}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
             
         submdl = kar_opt.first_stage_update(submdl, submdl_dict, k_ots)
         if extended_log:
             self.log_queue.put('\nАнализируем срабатывания, отстраиваем первую ступень в упущенных подрежимах (first_stage_update)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         submdl = kar_opt.calc_second_stage(submdl, submdl_dict, k_ch)
         if extended_log:
             self.log_queue.put('\nВыводим вторую ступень на чувствование тока КЗ на линии во всех подрежимах (calc_second_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         submdl = kar_opt.second_stage_update(submdl, submdl_dict, k_ch)
         if extended_log:
             self.log_queue.put('\nВыводим вторую ступень на чувствование тока КЗ в упущенных подрежимах (update_second_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')        
     
         # оптимизационная функция
@@ -1008,7 +1013,8 @@ class PowerGridOptimizationApp(tk.Tk):
             optuna.logging.set_verbosity(optuna.logging.WARNING)
             kar_opt.optimize_protection_times(submdl, submdl_dict, n_trials=n_iterations, t_range=[1, 7], loss_params=loss_params)
             self.log_queue.put('\nОптимизируем времена срабатывания второй ступени (optimized_second_protection_times)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         elif n_stages in [3, 4]:
@@ -1022,7 +1028,8 @@ class PowerGridOptimizationApp(tk.Tk):
             best_sett, submdl = kar_opt.optimize_third_stage_settings(
             submdl, submdl_dict, n_trials=n_iterations, two_stages=two_stages,
             loss_params=loss_params, loss_callback=loss_callback)
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         # После оптимизации
