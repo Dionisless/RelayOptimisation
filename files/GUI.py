@@ -23,6 +23,22 @@ import kar_optimisation_pypeline as kar_opt
 # Функции, предоставленные вами
 
 def show_bad_results(mdl, submdl_dict):
+    """
+    Анализирует срабатывания защит и возвращает словарь проблемных подрежимов.
+
+    Проблемные результаты:
+      id == -666 → КЗ не было отключено ('Неоткл КЗ')
+      line ∉ {q1-kz, kz-q2, line_kz} → неселективное срабатывание ('Неселект')
+
+    Параметры:
+        mdl         -- объект модели сети
+        submdl_dict -- словарь подрежимов {id: {line_kz, percent, p_off, kz_type}}
+
+    Возвращает:
+        tuple -- (bad_sm_dict, prot_work)
+          bad_sm_dict -- {i: {type, id, line_kz, kz_type, percent, p_off}}
+          prot_work   -- полный словарь результатов analyze_relay_protections
+    """
     prot_work = kanl.analyze_relay_protections(mdl, submdl_dict, log=False, range_prot_analyse=False, print_G=False)
     i = 0
     bad_sm_dict = {}
@@ -39,6 +55,22 @@ def show_bad_results(mdl, submdl_dict):
     return bad_sm_dict, prot_work
 
 def make_G_list(mdl, submdl_dict, sm_id, prot_work):
+    """
+    Формирует пошаговый список снимков сети для визуализации развития КЗ.
+
+    Шаг 0: состояние до КЗ.
+    Шаги 1..N: последовательные отключения защит в порядке срабатывания (по времени t).
+    Если КЗ не было отключено (-666), добавляет финальный снимок с пометкой.
+
+    Параметры:
+        mdl         -- базовая модель сети
+        submdl_dict -- словарь подрежимов
+        sm_id       -- ID подрежима для анализа
+        prot_work   -- словарь срабатываний из analyze_relay_protections
+
+    Возвращает:
+        dict -- {шаг: {'t': время/метка, 'sm': подмодель mrtkz.Model}}
+    """
     submdl = kanl.to_submdl(mdl, submdl_dict[sm_id])
     smdl_dict = {}
     smdl_dict[0] = {'t': 'До КЗ', 'sm': submdl}
@@ -200,11 +232,6 @@ class PowerGridOptimizationApp(tk.Tk):
             end = to_canvas_coords(*node_positions[q2_name])
 
             self.canvas.create_line(start[0], start[1], end[0], end[1], fill="blue", width=2, arrow=tk.LAST)
-            '''
-            mid_x = (start[0] + end[0]) / 2
-            mid_y = (start[1] + end[1]) / 2
-            self.canvas.create_text(mid_x, mid_y, text={p.name}, font=("Arial", 8))
-            '''
             # Вычисление угла наклона линии для размещения текста
             dx = end[0] - start[0]
             dy = end[1] - start[1]
@@ -260,9 +287,6 @@ class PowerGridOptimizationApp(tk.Tk):
             self.canvas.create_text(canvas_x, canvas_y-15, text=str(node), font=("Arial", 10, "bold"))
     
         self.canvas.update()
-            #print(f"Canvas size: {canvas_width}x{canvas_height}")
-            #print(f"Number of nodes: {len(node_positions)}")
-            #print(f"Number of edges: {len(G.edges())}")
 
     def load_from_file(self):
         # Определяем поддерживаемые типы файлов
@@ -550,27 +574,6 @@ class PowerGridOptimizationApp(tk.Tk):
                 except ValueError:
                     tk.messagebox.showerror("Ошибка", "Неверный формат. Введите два числа, разделенных пробелом.")
         return tuple(result)
-    '''
-    # Старая версия, удалить если заработала новая
-    def delete_object(self):
-        selected_items = self.tree.selection()
-        if not selected_items:
-            tk.messagebox.showerror("Ошибка", "Выберите объект для удаления")
-            return
-
-        selected_item = selected_items[0]
-        values = self.tree.item(selected_item)['values']
-        
-        if self.object_var.get() == "Узлы":
-            self.mdl = ktkz.q_del(self.mdl, values[0])  # Удаление узла
-        else:
-            self.mdl = ktkz.p_del(self.mdl, values[0])  # Удаление линии
-
-        self.update_table()
-        self.update_visualization()
-        self.update_subregimes_visualization()
-
-    '''
     def delete_object(self):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -614,13 +617,10 @@ class PowerGridOptimizationApp(tk.Tk):
 
         # Поле ввода с автопереносом текста
         self.input_entry = scrolledtext.ScrolledText(input_frame, wrap=tk.WORD, height=4)
-        #self.input_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         self.input_entry.pack(side=tk.LEFT, fill="x", expand=True, padx=5, pady=5)
         # Добавляем значение по умолчанию
         default_text = "(ПОЯС[1]+ИНДУКЦ)*ТИПКЗ[A0]*ЛИНИИКЗ[ВСЕ]*ШАГ[0.999]*ПЕРЕБОР[1]"
         self.input_entry.insert(tk.INSERT, default_text)
-        #object_menu = ttk.Combobox(left_frame, textvariable=self.object_var, values=["Узлы", "Линии"])
-        #object_menu.pack(side="top", fill="x", padx=5, pady=5)
         # Кнопка выполнения
         execute_button = ttk.Button(input_frame, text="Выполнить", command=self.execute_calculation)
         execute_button.pack(side=tk.LEFT)
@@ -707,7 +707,6 @@ class PowerGridOptimizationApp(tk.Tk):
         try:
             start_time = time.time()
             #self.submdl_dict = self.result_text.get("1.0", tk.END).strip()
-            #self.submdl_dict = eval(self.submdl_dict) if isinstance(self.submdl_dict, str) else self.submdl_dict
             kanl.ML_func(self.mdl, self.submdl_dict)
             refined_time = time.time() - start_time
             print(refined_time)
@@ -746,7 +745,6 @@ class PowerGridOptimizationApp(tk.Tk):
     def update_subregimes_visualization(self):
         self.submdl_canvas.delete("all")
         G = self.mdl.G
-        #print("mdl_data", self.mdl.np, self.mdl.G)
         if not G.nodes:
             return
     
@@ -1156,16 +1154,6 @@ class PowerGridOptimizationApp(tk.Tk):
 
         self.anl_canvas = tk.Canvas(self.anl_canvas_frame, bg='white')
         self.anl_canvas.pack(fill=tk.BOTH, expand=True)
-        '''
-        control_frame = ttk.Frame(right_frame)
-        control_frame.pack(fill=tk.X)
-
-        ttk.Label(control_frame, text="Время:").pack(side=tk.LEFT)
-
-        self.time_scale_var = tk.IntVar()
-        self.time_scale = ttk.Scale(control_frame, from_=0, to=0, variable=self.time_scale_var, orient=tk.HORIZONTAL, command=self.on_time_scale_change)
-        self.time_scale.pack(fill=tk.X, expand=True)
-        '''
         # Удаляем ползунок времени и добавляем кнопки
         control_frame = ttk.Frame(right_frame)
         control_frame.pack(fill=tk.X)
@@ -1249,11 +1237,6 @@ class PowerGridOptimizationApp(tk.Tk):
         self.smdl_dict = make_G_list(self.mdl, self.submdl_dict, sm_id, self.prot_work)
         # Отображаем начальное состояние
         self.draw_network_graph(time_index=0)
-    '''
-    def on_time_scale_change(self, value):
-        time_index = int(float(value))
-        self.draw_network_graph(time_index)
-    '''
     def draw_network_graph(self, time_index):
         """Отрисовать граф сети для указанного времени."""
         self.anl_canvas.delete("all")
@@ -1307,44 +1290,6 @@ class PowerGridOptimizationApp(tk.Tk):
                 gen_name = q.name + '_0'
                 node_colors[gen_name] = 'darkblue'
                 node_sizes[gen_name] = 5
-        '''
-        # Отрисовка рёбер и их меток
-        for p in sm.bp:
-            q1_name = p.q1.name if p.q1 != 0 else p.name + '_0'
-            q2_name = p.q2.name if p.q2 != 0 else p.name + '_0'
-    
-            I0 = p.res1(['I0'], 'M')['I0']
-            ang = p.res1(['I0'], '<f')['I0']
-    
-            start = to_anl_canvas_coords(*node_positions[q1_name])
-            end = to_anl_canvas_coords(*node_positions[q2_name])
-    
-            # Определение направления стрелки
-            if ((-20 <= ang <= 160) or (340 <= ang <= 360)):
-                arrow = tk.LAST
-            else:
-                arrow = tk.FIRST
-                start, end = end, start  # Меняем местами начало и конец для правильного направления стрелки
-    
-            try:
-                I0 = round(I0)
-            except:
-                I0 = 0
-    
-            line_color = "blue" if G.edges[q1_name, q2_name].get("is_operational", True) else "red"
-            self.anl_canvas.create_line(start[0], start[1], end[0], end[1], fill=line_color, width=2, arrow=arrow)
-        
-            # Вычисление угла наклона линии для размещения текста
-            angle = math.atan2(end[1] - start[1], end[0] - start[0])
-            #angle = math.atan2(- end[1] + start[1], - end[0] + start[0])
-            text_angle = math.degrees(angle)
-            if 90 < text_angle <= 270:
-                text_angle += 180
-    
-            mid_x = (start[0] + end[0]) / 2
-            mid_y = (start[1] + end[1]) / 2
-            self.anl_canvas.create_text(mid_x, mid_y, text=f"{p.name}\nI0={I0}", font=("Arial", 8), angle=text_angle)
-            '''
             # Внутри функции draw_network_graph, заменить часть с отрисовкой рёбер и их меток:
 
         # Отрисовка рёбер и их меток
