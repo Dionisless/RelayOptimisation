@@ -1192,3 +1192,73 @@ def vis_I0_graph(mdl):
     plt.axis('off')
     plt.show()
 '''
+
+
+def p_del_elem(mdl, elem_name, show_G=False, show_par=False, node=False):
+    """
+    Создаёт подрежим с отключённым элементом (все ветви элемента удалены).
+
+    Аналог p_del, но работает с объектом Element: находит элемент по имени
+    и удаляет все его ветви одновременно.
+
+    Параметры:
+        mdl       -- базовая модель сети
+        elem_name -- имя элемента (str или число, соответствующее Element.name)
+        show_G    -- вывод графа после удаления (по умолчанию: False)
+        show_par  -- вывод имён удалённых ветвей (по умолчанию: False)
+        node      -- имя узла для сохранения связной компоненты (по умолчанию: False)
+
+    Возвращает:
+        submdl -- подмодель без ветвей элемента (не рассчитана)
+
+    Исключения:
+        ValueError -- если элемент с указанным именем не найден в модели
+    """
+    elem = next((e for e in mdl.be if str(e.name) == str(elem_name)), None)
+    if elem is None:
+        raise ValueError(f'Элемент {elem_name!r} не найден в модели')
+    branch_names = tuple(p.name for p in elem.plist)
+    return p_del(mdl, del_p_name=branch_names, show_G=show_G, show_par=show_par, node=node)
+
+
+def kz_elem_q(mdl, elem_name, percent, show_G=False, show_par=False, kaskade=False):
+    """
+    Добавляет промежуточный узел КЗ на элемент на заданном проценте его длины.
+
+    Определяет нужную ветвь элемента по соотношению |Z1| ветвей (суррогат длины).
+    Для однородных элементов (одна ветвь) эквивалентен kz_q с той же долей.
+
+    Параметры:
+        mdl       -- базовая модель сети
+        elem_name -- имя элемента (str или число)
+        percent   -- позиция КЗ, доля от 0 до 1 (напр. 0.5 = середина элемента)
+        show_G    -- вывод графа (по умолчанию: False)
+        show_par  -- вывод параметров (по умолчанию: False)
+        kaskade   -- каскадное удаление (по умолчанию: False)
+
+    Возвращает:
+        submdl -- подмодель с добавленным узлом КЗ (не рассчитана)
+
+    Исключения:
+        ValueError -- если элемент не найден или не содержит ветвей
+    """
+    elem = next((e for e in mdl.be if str(e.name) == str(elem_name)), None)
+    if elem is None:
+        raise ValueError(f'Элемент {elem_name!r} не найден в модели')
+    if not elem.plist:
+        raise ValueError(f'Элемент {elem_name!r} не содержит ветвей')
+
+    # Длины ветвей — модуль |Z1| как суррогат физической длины
+    lengths = [abs(p.Z[0]) for p in elem.plist]
+    total = sum(lengths) or 1.0
+    target = float(percent) * total
+
+    cum = 0.0
+    for i, p in enumerate(elem.plist):
+        cum += lengths[i]
+        if cum >= target - 1e-9 or i == len(elem.plist) - 1:
+            branch_percent = ((target - (cum - lengths[i])) / lengths[i]
+                              if lengths[i] > 0 else 0.5)
+            branch_percent = max(0.0, min(1.0, branch_percent))
+            return kz_q(mdl, line=p, percentage_of_line=branch_percent,
+                        show_G=show_G, show_par=show_par, kaskade=kaskade)
