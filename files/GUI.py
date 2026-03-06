@@ -167,6 +167,10 @@ class PowerGridOptimizationApp(tk.Tk):
         # Добавляем кнопку "тестовая модель"
         ttk.Button(btn_frame, text="Тестовая модель", command=self.load_test_model).pack(side="left", padx=5)
 
+        # Кнопка импорта фонда защит из АРМ СРЗА
+        ttk.Button(btn_frame, text="Импорт фонда АРМ (.xlsx)",
+                   command=self.import_fond_from_file).pack(side="left", padx=5)
+
         right_frame = ttk.Frame(self.grid_page, width=600)
         right_frame.pack(side="right", fill="both", expand=True)
 
@@ -291,51 +295,45 @@ class PowerGridOptimizationApp(tk.Tk):
     def load_from_file(self):
         # Определяем поддерживаемые типы файлов
         filetypes = [
-            ("Excel files", "*.xls"),
+            ("Excel files (АРМ СРЗА)", "*.xlsx"),
+            ("Excel files (старый формат)", "*.xls"),
             ("Python files", "*.py"),
             ("All Files", "*.*")
         ]
-        
+
         # Открываем диалог выбора файла
         filename = filedialog.askopenfilename(filetypes=filetypes)
-        
+
         if filename:
             try:
-                # Получаем расширение файла
                 file_extension = os.path.splitext(filename)[1].lower()
-                
-                if file_extension == '.xls':
-                    # Создаем необходимые директории
+
+                if file_extension == '.xlsx':
+                    # Прямой импорт из АРМ СРЗА (.xlsx) без промежуточного скрипта
+                    arm = Arm.ImpModel('imported', '')
+                    arm.ImpFromXLS(filename)
+                    mdl = arm.to_mrtkz_model()
+
+                elif file_extension == '.xls':
+                    # Старый путь через генерацию .py скрипта (обратная совместимость)
                     documents_path = os.path.expanduser('~/Documents')
-                    protection_dir = os.path.join(documents_path, 'protection_optimisation')
-                    import_dir = os.path.join(protection_dir, 'import')
-                    
-                    # Создаем директории, если они не существуют
+                    import_dir = os.path.join(documents_path, 'protection_optimisation', 'import')
                     os.makedirs(import_dir, exist_ok=True)
-                    
-                    # Сохраняем путь к папке import
                     output_filename = os.path.join(import_dir, 'imported_model')
-                    
-                    # Импорт из XLS
-                    mdl = Arm.ImpModel('Тест', "Тестовая модель")
-                    mdl.ImpFromXLS(filename)
-                    
-                    # Экспорт в .py файл
-                    mdl.Exp2MRTKZ(output_filename, RW=True)
-                    
-                    # Выполняем сгенерированный скрипт
+                    arm = Arm.ImpModel('Тест', "Тестовая модель")
+                    arm.ImpFromXLS(filename)
+                    arm.Exp2MRTKZ(output_filename, RW=True)
                     result = runpy.run_path(output_filename + '.py')
                     mdl = result.get("mdl")
-                    
+
                 elif file_extension == '.py':
-                    # Прямое выполнение Python файла
                     result = runpy.run_path(filename)
                     mdl = result.get("mdl")
-                
+
                 else:
-                    tk.messagebox.showerror("Error", "Поддерживаются только типы .xls, .py")
+                    tk.messagebox.showerror("Ошибка", "Поддерживаются форматы .xlsx, .xls, .py")
                     return
-                
+
                 # Генерация координат узлов
                 mdl = ktkz.generate_node_coordinates(mdl)
 
@@ -345,18 +343,50 @@ class PowerGridOptimizationApp(tk.Tk):
                 self.update_idletasks()
                 self.update_visualization()
                 self.update_subregimes_visualization()
-                
-                # Вывод информации о загруженной модели
-                print("Test model loaded")
-                print(f"Number of nodes: {len(self.mdl.bq)}")
-                print(f"Number of branches: {len(self.mdl.bp)}")
-                
-                #tk.messagebox.showinfo("Success", "Model loaded successfully")
-                
+
+                self.log_queue.put(
+                    f'Модель загружена: узлов={len(self.mdl.bq)}, '
+                    f'ветвей={len(self.mdl.bp)}, '
+                    f'элементов={len(self.mdl.be)}'
+                )
+
             except Exception as e:
-                tk.messagebox.showerror("Error", f"Ошибка загрузки файла: {str(e)}")
+                tk.messagebox.showerror("Ошибка", f"Ошибка загрузки файла: {str(e)}")
                 print(f"Error details: {str(e)}")
      
+
+    def import_fond_from_file(self):
+        """Загружает фонд защит из файла АРМ СРЗА (.xlsx) и добавляет защиты в текущую модель."""
+        if not self.mdl or not self.mdl.bp:
+            tk.messagebox.showerror("Ошибка", "Сначала загрузите сетевую модель")
+            return
+
+        filename = filedialog.askopenfilename(
+            filetypes=[("Excel files (АРМ СРЗА)", "*.xlsx"), ("All Files", "*.*")]
+        )
+        if not filename:
+            return
+
+        try:
+            fond_list = Arm.parse_fond_xlsx(filename)
+            created = Arm.apply_fond_to_model(self.mdl, fond_list)
+
+            # Собираем замечания по комплектам
+            warnings = []
+            for f in fond_list:
+                warnings.extend(f.get('warnings', []))
+
+            msg = f'Фонд загружен: защит={len(fond_list)}, ступеней создано={created}.'
+            if warnings:
+                msg += f'\nЗамечания ({len(warnings)}):\n' + '\n'.join(warnings)
+
+            self.log_queue.put(msg)
+            self.update_table()
+            self.update_visualization()
+
+        except Exception as e:
+            tk.messagebox.showerror("Ошибка", f"Ошибка загрузки фонда: {str(e)}")
+            print(f"Error details: {str(e)}")
 
     def save_to_file(self):
         filename = filedialog.asksaveasfilename(filetypes=[("All Files", "*.*")])
@@ -915,6 +945,7 @@ class PowerGridOptimizationApp(tk.Tk):
             'non_select_dist': self.non_select_dist_var.get(),
             'k_loss_time_dist': self.k_loss_time_dist_var.get(),
             'k_loss_k_ch_dist': self.k_loss_k_ch_dist_var.get(),
+            'range_prot_analyse': self.dist_prot_anl_var.get(),
         }
 
 
@@ -982,25 +1013,29 @@ class PowerGridOptimizationApp(tk.Tk):
         submdl = kar_opt.calc_first_stage(mdl, submdl_dict, k_ots)
         if extended_log:
             self.log_queue.put('\nОтстраиваем первую ступень во всех подрежимах (calc_first_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"],1)}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
             
         submdl = kar_opt.first_stage_update(submdl, submdl_dict, k_ots)
         if extended_log:
             self.log_queue.put('\nАнализируем срабатывания, отстраиваем первую ступень в упущенных подрежимах (first_stage_update)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         submdl = kar_opt.calc_second_stage(submdl, submdl_dict, k_ch)
         if extended_log:
             self.log_queue.put('\nВыводим вторую ступень на чувствование тока КЗ на линии во всех подрежимах (calc_second_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         submdl = kar_opt.second_stage_update(submdl, submdl_dict, k_ch)
         if extended_log:
             self.log_queue.put('\nВыводим вторую ступень на чувствование тока КЗ в упущенных подрежимах (update_second_stage)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')        
     
         # оптимизационная функция
@@ -1008,7 +1043,8 @@ class PowerGridOptimizationApp(tk.Tk):
             optuna.logging.set_verbosity(optuna.logging.WARNING)
             kar_opt.optimize_protection_times(submdl, submdl_dict, n_trials=n_iterations, t_range=[1, 7], loss_params=loss_params)
             self.log_queue.put('\nОптимизируем времена срабатывания второй ступени (optimized_second_protection_times)')
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         elif n_stages in [3, 4]:
@@ -1022,7 +1058,8 @@ class PowerGridOptimizationApp(tk.Tk):
             best_sett, submdl = kar_opt.optimize_third_stage_settings(
             submdl, submdl_dict, n_trials=n_iterations, two_stages=two_stages,
             loss_params=loss_params, loss_callback=loss_callback)
-            result = kanl.ML_func(submdl, submdl_dict, extended_result=True)
+            result = kanl.ML_func(submdl, submdl_dict, extended_result=True,
+                      range_prot_analyse=loss_params.get('range_prot_analyse', False))
             self.log_queue.put(f'Общая ошибка: {result["loss"]}\nКоличество неселективных срабатываний: {result["non_select_count"]}\nКоличество селективных срабатываний: {result["select_count"]}\nДоля селективных срабатываний: {round(100-result["select_share"])}%\nКоличество неотключений: {result["no_off_count"]}\nСреднее время отключения: {round(result["mean_time"],2)} c')
     
         # После оптимизации

@@ -82,6 +82,114 @@ def generate_submodels(mdl, max_belt_range=2, num_of_enum_lines=1, step=0.05, kz
     return submdl_dict
 
 
+def _run_kz_simulation(submdl, base_t_dict, line_obj, submdl_id,
+                       off_result, cut_id, failed_ids=None, print_G=False):
+    """
+    Один прогон симуляции срабатывания защит для подрежима КЗ (while-цикл).
+
+    Итеративно находит защиту с минимальным временем срабатывания, отключает её линию
+    и повторяет до полного гашения КЗ или неотключения.
+
+    Параметры:
+        submdl      -- начальная подмодель КЗ (узел KZ добавлен, Calc вызван)
+        base_t_dict -- {stat_id: t} — исходные времена защит (будет скопирован)
+        line_obj    -- объект линии КЗ (для записи в off_result)
+        submdl_id   -- ID подрежима (для записи в off_result)
+        off_result  -- накапливаемый словарь результатов (изменяется на месте)
+        cut_id      -- текущий ключ для off_result
+        failed_ids  -- множество stat_id заблокированных защит (отказавший выключатель);
+                       None или пустое множество — нормальный режим
+        print_G     -- если True, выводит граф на каждом шаге
+
+    Возвращает:
+        (off_result, cut_id) -- обновлённые словарь результатов и счётчик
+    """
+    p_off = ()
+    t_dict = base_t_dict   # разделяемая ссылка на базовые времена (поведение совместимо с оригиналом)
+    t_total = 0
+
+    while True:
+        # На первой итерации (p_off пустой) копирование не нужно — submdl уже рассчитан
+        if p_off:
+            submdl_temp = ktkz.p_del(submdl, del_p_name=p_off, show_G=False, show_par=False)
+            submdl_temp.Calc()
+        else:
+            submdl_temp = submdl
+        if print_G:
+            ktkz.print_G(submdl_temp, I=True)
+
+        # Проверяем, отключилось ли КЗ
+        try:
+            I0_kz = submdl_temp.bn[0].res('I0', 'M')
+        except:
+            off_result[cut_id] = {'id': -7, 't': t_total, 'submdl_id': submdl_id,
+                                  'p_off': p_off, 'k_ch': 0, 'line_kz': line_obj.name,
+                                  'line': 0, 'I0_line': 0, 'prot_id': -1}
+            cut_id += 1
+            break
+        if not I0_kz > 10:
+            off_result[cut_id] = {'id': -7, 't': t_total, 'submdl_id': submdl_id,
+                                  'p_off': p_off, 'k_ch': 0, 'line_kz': line_obj.name,
+                                  'line': 0, 'I0_line': I0_kz, 'prot_id': -1}
+            cut_id += 1
+            break
+
+        # Поиск защит, которые чувствуют КЗ
+        prot_dict = {}
+        for p in submdl_temp.bp:
+            if not (p.q1_def or p.q2_def):
+                continue  # нет защит на этой ветви — пропускаем
+            I0 = p.res1(['I0'], 'M')['I0']
+            ang = p.res1(['I0'], '<f')['I0']
+            for d1 in p.q1_def:
+                if I0 >= d1.I0 and ((-200 <= ang <= -20) or (160 <= ang <= 340)):
+                    did = d1.stat_id
+                    if failed_ids and did in failed_ids:
+                        continue  # защита заблокирована отказавшим выключателем
+                    try: k_ch = d1.I0 / I0
+                    except: k_ch = 0
+                    prot_dict[did] = {'id': did, 'line': d1.p.name, 't': t_dict[did],
+                                      'k_ch': k_ch, 'I0_line': [I0, ang]}
+            for d2 in p.q2_def:
+                if I0 >= d2.I0 and ((-20 <= ang <= 160) or (340 <= ang <= 360)):
+                    did = d2.stat_id
+                    if failed_ids and did in failed_ids:
+                        continue  # защита заблокирована отказавшим выключателем
+                    try: k_ch = d2.I0 / I0
+                    except: k_ch = 0
+                    prot_dict[did] = {'id': did, 'line': d2.p.name, 't': t_dict[did],
+                                      'k_ch': k_ch, 'I0_line': [I0, ang]}
+
+        # Если ни одна незаблокированная защита не сработала
+        if not prot_dict:
+            off_result[cut_id] = {'id': -666, 't': t_total, 'submdl_id': submdl_id,
+                                  'p_off': p_off, 'k_ch': 0, 'line_kz': line_obj.name,
+                                  'line': 0, 'I0_line': I0_kz, 'prot_id': -1}
+            cut_id += 1
+            break
+
+        # Находим защиту с минимальным временем срабатывания
+        t = min(prot_dict[pid]['t'] for pid in prot_dict)
+        t_total += t
+
+        for p_id in prot_dict:
+            if prot_dict[p_id]['line'] in p_off:
+                continue  # линия уже отключена на этом шаге (обе стороны)
+            if t_dict[p_id] == t:
+                off_result[cut_id] = {'id': p_id, 't': t_total, 'submdl_id': submdl_id,
+                                      'p_off': p_off, 'k_ch': prot_dict[p_id]['k_ch'],
+                                      'line_kz': line_obj.name, 'line': prot_dict[p_id]['line'],
+                                      'I0_line': prot_dict[p_id]['I0_line'], 'prot_id': p_id}
+                cut_id += 1
+                p_off = p_off + (prot_dict[p_id]['line'],)
+                if print_G:
+                    print(f'Отключена линия {prot_dict[p_id]["line"]}')
+            else:
+                t_dict[p_id] -= t
+
+    return off_result, cut_id
+
+
 def analyze_relay_protections(mdl, submdl_dict, log=False, range_prot_analyse=False, print_G=False):
     """
     Симулирует последовательное срабатывание защит для каждого подрежима КЗ.
@@ -91,143 +199,76 @@ def analyze_relay_protections(mdl, submdl_dict, log=False, range_prot_analyse=Fa
     соответствующую линию и повторяет до полного отключения КЗ.
 
     Коды результата в поле 'id' записи off_result:
-        id > 0   -- защита сработала (id == stat_id защиты)
-        id == -7  -- КЗ отключено (нет тока в узле КЗ)
+        id > 0    -- защита сработала (id == stat_id защиты)
+        id == -7  -- КЗ отключено (ток в узле КЗ стал нулевым)
         id == -666 -- ни одна защита не сработала (неотключение)
+
+    При range_prot_analyse=True для каждого подрежима выполняется два прогона:
+    один с отказом выключателя q1-стороны линии КЗ, второй — q2-стороны.
+    Срабатывания первого пояса от отказавшей стороны не считаются неселективными
+    (def_score оценивает их с r=2).
 
     Параметры:
         mdl               -- модель mrtkz.Model с настроенными защитами
         submdl_dict       -- словарь подрежимов из generate_submodels
         log               -- если True, выводит время выполнения (по умолчанию: False)
-        range_prot_analyse -- если True, исключает из анализа собственную линию КЗ
-                             (режим дальнего резервирования) (по умолчанию: False)
+        range_prot_analyse -- если True, моделирует отказ выключателя (по умолчанию: False)
         print_G           -- если True, выводит граф сети на каждом шаге (по умолчанию: False)
 
     Возвращает:
         dict -- off_result {cut_id: {'id', 't', 'submdl_id', 'p_off',
                 'k_ch', 'line_kz', 'line', 'I0_line', 'prot_id'}}
     """
-    # Засекаем начальное время
     t1 = time.time()
     cut_id = 0
-    off_result = {}  # Результаты отключений
-    base_t_dict = {}  # Словарь для хранения времени срабатывания защит
+    off_result = {}
 
-    # Сохраняем базовое время защит для каждой защиты в модели
-    for d in mdl.bd:
-        base_t_dict[d.stat_id] = d.t
-    # Проходим по каждому элементу в подмоделях
-    for submdl_id in submdl_dict:
+    # Кэш объектов линий — избегаем O(n) поиска для одной и той же line_kz
+    line_cache = {}
+    for row in submdl_dict.values():
+        name = row['line_kz']
+        if name not in line_cache:
+            line_cache[name] = ktkz.p_search(mdl, p_name=name)
 
-        # Извлекаем данные для текущей подмодели
-        line = submdl_dict[submdl_id]['line_kz']
-        percent = submdl_dict[submdl_id]['percent']
-        p_off = submdl_dict[submdl_id]['p_off']
-        kz_type = submdl_dict[submdl_id]['kz_type']
-        
-        # Поиск линии по имени
-        line_obj = ktkz.p_search(mdl, p_name=line)
-        
-        # Создаем подмодель с учётом процента линии и типа КЗ
-        submdl = ktkz.kz_q(mdl, line=line_obj, percentage_of_line=percent, show_G=False, show_par=False, kaskade=False)
-        
-        # Удаление мощности для подмодели на определённой поясной зоне
-        submdl = ktkz.p_del(submdl, del_p_name=p_off, show_G=False, show_par=False, node = False)#submdl.bq[-1].name)
-        
-        # Расчёт КЗ для подмодели
-        KZ1 = mrtkz.N(submdl, 'KZ', submdl.bq[-1], kz_type)
-        
-        # Выполняем расчёт для подмодели
+    # Базовые времена защит — восстанавливаются копией для каждого подрежима
+    base_t_dict = {d.stat_id: d.t for d in mdl.bd}
+
+    for submdl_id, row in submdl_dict.items():
+        line_obj = line_cache[row['line_kz']]
+        percent   = row['percent']
+        p_off_init = row['p_off']
+        kz_type   = row['kz_type']
+
+        # Создаём подмодель КЗ (добавление узла КЗ + начальные отключения)
+        submdl = ktkz.kz_q(mdl, line=line_obj, percentage_of_line=percent,
+                           show_G=False, show_par=False, kaskade=False)
+        submdl = ktkz.p_del(submdl, del_p_name=p_off_init, show_G=False, show_par=False, node=False)
+        mrtkz.N(submdl, 'KZ', submdl.bq[-1], kz_type)
         submdl.Calc()
-        
-        t=0
-        p_off = ()
-        t_dict = base_t_dict
-        t_total = 0
-        if print_G: print('Начат анализ подрежима №', submdl_id, submdl_dict[submdl_id])
-        while True:
-            # Пересчёт подмодели с новыми условиями
-            submdl_temp = ktkz.p_del(submdl, del_p_name=p_off, show_G=False, show_par=False)
-            submdl_temp.Calc()
-            if print_G:
-                
-                ktkz.print_G(submdl_temp, I=True)
-            # Проверяем, отключилось ли КЗ
-            try: 
-                I0_kz = submdl_temp.bn[0].res('I0', 'M') # если узел кз исчез, значит удалили все ветви вокруг, КЗ отключено
-                #print('Ток в точке КЗ',submdl_temp.bn[0].res('I0', 'M'))
-            except: 
-                off_result_row = {'id': -7, 't': t_total, 'submdl_id': submdl_id, 'p_off': p_off, 'k_ch': 0, 'line_kz':line_obj.name, 'line': 0, 'I0_line': 0, 'prot_id':-1}   
-                off_result[cut_id] = off_result_row  # Добавление отключения в общий результат
-                cut_id+=1
-                break
-            if not I0_kz>10:
-                off_result_row = {'id': -7, 't': t_total, 'submdl_id': submdl_id, 'p_off': p_off, 'k_ch': 0, 'line_kz':line_obj.name, 'line': 0, 'I0_line': I0_kz, 'prot_id':-1}   
-                off_result[cut_id] = off_result_row  # Добавление отключения в общий результат
-                cut_id+=1
-                break
 
-            # Поиск защит, которые чувствуют КЗ
-            prot_dict = {}
-            for p in submdl_temp.bp:
-                I0 = p.res1(['I0'], 'M')['I0']
-                ang = p.res1(['I0'], '<f')['I0']
-                for d1 in p.q1_def:
-                    if I0 >= d1.I0 and ((-200 <= ang <= -20) or (160 <= ang <= 340)):
-                        did = d1.stat_id
-                        try: k_ch = d1.I0 / I0
-                        except: k_ch = 0
-                        
-                        prot_dict[did] = {'id': did, 'line': d1.p.name, 't': t_dict[did], 'k_ch': k_ch, 'I0_line':[I0, ang]}
-                for d2 in p.q2_def:
-                    if I0 >= d2.I0 and ((-20 <= ang <= 160) or (340 <= ang <= 360)):
-                        did = d2.stat_id
-                        try: k_ch = d1.I0 / I0
-                        except: k_ch = 0
-                        prot_dict[did] = {'id': did, 'line': d2.p.name, 't': t_dict[did], 'k_ch': k_ch, 'I0_line':[I0, ang]}
+        if print_G:
+            print('Начат анализ подрежима №', submdl_id, row)
 
-            # Если ни одна защита не сработала
-            if prot_dict == {}:
-                off_result_row = {'id': -666, 't': t_total, 'submdl_id': submdl_id, 'p_off': p_off, 'k_ch': 0, 'line_kz':line_obj.name, 'line': 0, 'I0_line': I0_kz, 'prot_id':-1}   
-                off_result[cut_id] = off_result_row  # Добавление результата в общий словарь
-                cut_id += 1
-                
-                break
+        if not range_prot_analyse:
+            off_result, cut_id = _run_kz_simulation(
+                submdl, base_t_dict, line_obj, submdl_id,
+                off_result, cut_id, failed_ids=None, print_G=print_G)
+        else:
+            # Дальнее резервирование: прогон с отказом q1-стороны и q2-стороны
+            failed_ids_q1 = {d.stat_id for p in submdl.bp
+                             if p.name == 'q1-kz' for d in p.q1_def}
+            failed_ids_q2 = {d.stat_id for p in submdl.bp
+                             if p.name == 'kz-q2' for d in p.q2_def}
+            off_result, cut_id = _run_kz_simulation(
+                submdl, base_t_dict, line_obj, submdl_id,
+                off_result, cut_id, failed_ids=failed_ids_q1, print_G=print_G)
+            off_result, cut_id = _run_kz_simulation(
+                submdl, base_t_dict, line_obj, submdl_id,
+                off_result, cut_id, failed_ids=failed_ids_q2, print_G=print_G)
 
-            # Обрабатываем сработавшие защиты
-            prot_worked = False
-            # находим защиту с мин временем срабатывания
-            temp_t_list=[]
-            t=0
-            for p_id in prot_dict:
-                temp_t_list += [prot_dict[p_id]['t']]
-            t = min(temp_t_list)
-            t_total += t
-            #print(t)
-            for p_id in prot_dict:
-                if prot_dict[p_id]['line'] in p_off or (range_prot_analyse and prot_dict[p_id]['line'] == line):
-                    continue
-
-
-                else:
-                    if t_dict[p_id] == t:
-                        off_result_row = {'id': p_id, 't': t_total, 'submdl_id': submdl_id, 'p_off': p_off, 'k_ch': prot_dict[p_id]['k_ch'], 'line_kz':line_obj.name, 'line': prot_dict[p_id]['line'], 'I0_line': prot_dict[p_id]['I0_line'], 'prot_id':p_id}   
-                        off_result[cut_id] = off_result_row  # Добавление в результат
-                        cut_id += 1
-                        p_off = p_off + (prot_dict[p_id]['line'],)
-                        
-                        if print_G:
-                            off = prot_dict[p_id]['line']
-                            print(f'Отключена линия {off}')
-                        #print(off_result_row)
-                    else:
-                        t_dict[p_id] -= t
-    #prot_dict[p_id]['t']
-    # Засекаем конечное время и выводим время анализа, если включен лог
     t2 = time.time()
     if log:
         print(f"Время анализа: {t2 - t1} секунд")
-
     return off_result
 
 def def_score(mdl, prot_work, no_off=10, off=-1, non_select=1, k_loss_time=10,
@@ -488,23 +529,31 @@ def to_submdl(mdl, submdl_dict_row):
 
 def tokenize_expression(expression):
     """
-    Разбивает DSL-выражение на токены с учётом вложенных скобок.
+    Разбивает DSL-выражение на токены с учётом вложенных скобок и квадратных скобок.
 
-    Токены разделяются операторами '+' и '*' на верхнем уровне.
-    Подвыражения в скобках сохраняются как единый токен.
+    Операторы '+', '-', '*' на верхнем уровне (вне скобок) являются разделителями.
+    Подвыражения в круглых скобках сохраняются как единый токен.
+    Дефис внутри квадратных скобок (напр. [PS1-PS2]) не является оператором.
 
     Параметры:
         expression -- строка DSL-выражения подрежимов
 
     Возвращает:
-        list -- список строковых токенов
+        list -- список строковых токенов (включая токены-операторы '+', '-', '*')
     """
     tokens = []
     current_token = ''
-    bracket_level = 0
-    
+    bracket_level = 0      # уровень вложенности круглых скобок ()
+    sq_bracket_level = 0   # уровень вложенности квадратных скобок []
+
     for char in expression:
-        if char == '(' and bracket_level == 0:
+        if char == '[':
+            sq_bracket_level += 1
+            current_token += char
+        elif char == ']':
+            sq_bracket_level -= 1
+            current_token += char
+        elif char == '(' and bracket_level == 0 and sq_bracket_level == 0:
             if current_token:
                 tokens.append(current_token)
                 current_token = ''
@@ -516,7 +565,7 @@ def tokenize_expression(expression):
             if bracket_level == 0:
                 tokens.append(current_token)
                 current_token = ''
-        elif char in ('*', '+') and bracket_level == 0:
+        elif char in ('*', '+', '-') and bracket_level == 0 and sq_bracket_level == 0:
             if current_token:
                 tokens.append(current_token)
             tokens.append(char)
@@ -527,37 +576,44 @@ def tokenize_expression(expression):
                 bracket_level += 1
             elif char == ')':
                 bracket_level -= 1
-    
+
     if current_token:
         tokens.append(current_token)
-    
+
     return tokens
 
 def separate_by_plas(expression):
     """
-    Разбивает DSL-выражение на группы слагаемых.
+    Разбивает DSL-выражение на группы слагаемых со знаками.
 
-    Оператор '+' задаёт независимые наборы подрежимов (union),
+    Оператор '+' задаёт объединение наборов подрежимов (union),
+    оператор '-' задаёт вычитание (исключение совпадающих записей),
     оператор '*' соединяет параметры внутри одного слагаемого (декартово произведение).
 
     Параметры:
         expression -- строка DSL-выражения
 
     Возвращает:
-        list[list[str]] -- список групп, каждая группа — список токенов-множителей
+        list[tuple[int, list[str]]] -- список пар (знак, группа_токенов),
+            где знак = +1 (сложение) или -1 (вычитание)
     """
     tokens = tokenize_expression(expression)
-    global_list = []
+    groups = []
+    current_sign = 1
     current_list = []
     for token in tokens:
-        if token== '+': 
-            global_list.append(current_list)
+        if token in ('+', '-'):
+            if current_list:
+                groups.append((current_sign, current_list))
             current_list = []
-        elif token=='*': continue
-        else: current_list.append(token)
-    global_list.append(current_list)
-    current_list = []
-    return global_list
+            current_sign = 1 if token == '+' else -1
+        elif token == '*':
+            pass
+        else:
+            current_list.append(token)
+    if current_list:
+        groups.append((current_sign, current_list))
+    return groups
 
 
 def parse(item):
@@ -692,22 +748,24 @@ def find_const_in_buscets(string, m, lines_kz, step, kz_types, mdl):
         tuple -- (m, lines_kz, step, kz_types) с обновлёнными значениями
     """
     if '*' in string:
-        return m, lines_kz, step
+        return m, lines_kz, step, kz_types
     else:
         if string.startswith('(') and string.endswith(')'):
             # Удаляем первую и последнюю скобку
             string = string[1:-1]
-        list = separate_by_plas(string)
-        for items in list:
+        list_groups = separate_by_plas(string)
+        lines_pos, lines_neg = set(), set()
+        for sign, items in list_groups:
             for item in items:
                 func, arg = parse(item)
-                if func=="ПЕРЕБОР": m=arg
-                elif func=='ЛИНИИКЗ': 
-                    if arg==['ВСЕ']:
-                        arg = [p.name for p in mdl.bp]
-                    lines_kz = tuple(arg)
-                elif func=='ШАГ': step = arg
-                elif func=='ТИПКЗ': kz_types = arg
+                if func == "ПЕРЕБОР": m = arg
+                elif func == 'ЛИНИИКЗ':
+                    resolved = [p.name for p in mdl.bp] if arg == ['ВСЕ'] else arg
+                    (lines_pos if sign > 0 else lines_neg).update(resolved)
+                elif func == 'ШАГ': step = arg
+                elif func == 'ТИПКЗ': kz_types = arg
+        if lines_pos:
+            lines_kz = tuple(lines_pos - lines_neg)
     return m, lines_kz, step, kz_types
 
 def find_p_off_summ_in_buscets(string, m, lines_kz, step, kz_types, mdl, submdl_dict, log=False):
@@ -736,30 +794,32 @@ def find_p_off_summ_in_buscets(string, m, lines_kz, step, kz_types, mdl, submdl_
         if string.startswith('(') and string.endswith(')'):
             # Удаляем первую и последнюю скобку
             string = string[1:-1]
-        #print(string)
-        list = separate_by_plas(string)
-        test,_ = parse(list[0][0])
-        #print('test',test)
-        if not test in  ["ИНДУКЦ", "ПОЯС", "ОБЪЕКТЫ", "МАКСТОК"]:
+        list_groups = separate_by_plas(string)
+        # Проверяем, что первая группа содержит DSL-функцию p_off
+        test, _ = parse(list_groups[0][1][0])
+        if test not in ["ИНДУКЦ", "ПОЯС", "ОБЪЕКТЫ", "МАКСТОК"]:
             return submdl_dict
         for line_kz in lines_kz:
-            p_off = ()
-            for items in list:
+            p_off_pos, p_off_neg = set(), set()
+            for sign, items in list_groups:
                 for item in items:
-                    #print('ccc',item)
                     func, arg = parse(item)
-                    #print('cbc',func, arg)
-                    if func=="ИНДУКЦ": p_off += induct(mdl, line_kz)
-                    elif func=="ПОЯС":
-                        p_off += belt(mdl, line=line_kz, belt=arg)
-                    elif func=="МАКСТОК":
-                        p_off += enum_biggest_I(mdl, line_kz, kz_types, n=int(arg[0])) 
-                    elif func=="ОБЪЕКТЫ":
-                        #print('cbb',arg)
-                        p_off += tuple(arg)
-            #print(p_off)
-            p_off = tuple(set(p_off))
-            if log: print( f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                    if func == "ИНДУКЦ":
+                        contrib = set(induct(mdl, line_kz))
+                    elif func == "ПОЯС":
+                        contrib = set(belt(mdl, line=line_kz, belt=arg))
+                    elif func == "МАКСТОК":
+                        contrib = set(enum_biggest_I(mdl, line_kz, kz_types, n=int(arg[0])))
+                    elif func == "ОБЪЕКТЫ":
+                        contrib = set(arg)
+                    else:
+                        continue
+                    if sign > 0:
+                        p_off_pos.update(contrib)
+                    else:
+                        p_off_neg.update(contrib)
+            p_off = tuple(p_off_pos - p_off_neg)
+            if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
             submdl_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict)
         return submdl_dict
 
@@ -813,12 +873,42 @@ def base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict, log=False):
                 submdl_dict[id] = submdl_row  # Добавляем строку с данными в словарь
     return submdl_dict
 
+def subtract_submdl_dicts(positive_dict, negative_dict):
+    """
+    Вычитает из positive_dict записи, совпадающие с negative_dict.
+
+    Совпадение определяется по набору (line_kz, kz_type, percent, frozenset(p_off)).
+    Записи из positive_dict, не имеющие соответствия в negative_dict, сохраняются
+    с перенумерацией id начиная с 1.
+
+    Параметры:
+        positive_dict -- словарь подрежимов (слагаемое)
+        negative_dict -- словарь подрежимов для вычитания
+
+    Возвращает:
+        dict -- словарь с подрежимами, оставшимися после вычитания
+    """
+    neg_keys = {
+        (e['line_kz'], e['kz_type'], e['percent'], frozenset(e['p_off']))
+        for e in negative_dict.values()
+    }
+    result = {}
+    new_id = 0
+    for e in positive_dict.values():
+        key = (e['line_kz'], e['kz_type'], e['percent'], frozenset(e['p_off']))
+        if key not in neg_keys:
+            new_id += 1
+            result[new_id] = {**e, 'id': new_id}
+    return result
+
+
 def submdl_calc_main(mdl, task_str, submdl_dict={}, m=0, lines_kz=[], step=0, p_off=(), kz_types=[], log=False):
     """
     Оркестратор парсинга DSL-строки подрежимов и генерации submdl_dict.
 
-    Разбирает task_str по слагаемым (+) и множителям (*), извлекает параметры
+    Разбирает task_str по слагаемым (+/-) и множителям (*), извлекает параметры
     ПЕРЕБОР/ЛИНИИКЗ/ШАГ/ТИПКЗ и вызывает base_func для каждой комбинации.
+    Группы со знаком '-' вычитаются из итогового набора подрежимов.
     Рекурсивно обрабатывает вложенные скобочные выражения.
 
     Параметры:
@@ -836,57 +926,84 @@ def submdl_calc_main(mdl, task_str, submdl_dict={}, m=0, lines_kz=[], step=0, p_
         dict -- submdl_dict с добавленными подрежимами
     """
     string = task_str
-    # делим строку по слогаемым
     sum_list = separate_by_plas(string)
-    # начинаем анализ одного слогаемого
-    for sum_item in sum_list:
+
+    positive_dict = {}
+    negative_dict = {}
+
+    for sign, sum_item in sum_list:
+        # Временный словарь для записей текущей группы
+        temp_dict = {}
+
+        # --- Первый проход: извлечение констант (ПЕРЕБОР, ЛИНИИКЗ, ШАГ, ТИПКЗ) ---
         for item in sum_item:
-            #print(item)
-            if "(" in item: 
-                m, lines_kz, step = find_const_in_buscets(string, m, lines_kz, step, kz_types, mdl)
-            
+            if '(' in item:
+                m, lines_kz, step, kz_types = find_const_in_buscets(item, m, lines_kz, step, kz_types, mdl)
             else:
                 func, arg = parse(item)
-                if func=="ПЕРЕБОР": 
-                    m=arg
-                elif func=='ЛИНИИКЗ': 
-                    if arg==['ВСЕ']:
+                if func == "ПЕРЕБОР":
+                    m = arg
+                elif func == 'ЛИНИИКЗ':
+                    if arg == ['ВСЕ']:
                         arg = [p.name for p in mdl.bp]
                     lines_kz = arg
-                elif func=='ШАГ': step = float(arg[0]) 
-                elif func=='ТИПКЗ': kz_types = arg
-        #if log: print("Константы" ,m, lines_kz, step, p_off, kz_types)
-        for item in sum_item: 
+                elif func == 'ШАГ':
+                    step = float(arg[0])
+                elif func == 'ТИПКЗ':
+                    kz_types = arg
+
+        # --- Второй проход: генерация подрежимов ---
+        for item in sum_item:
             func, arg = parse(item)
             if func == "ИНДУКЦ":
                 for line_kz in lines_kz:
                     p_off = induct(mdl, line_kz)
-                    if log: print( f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
-                    submdl_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict)  
+                    if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                    temp_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, temp_dict)
             elif func == "ПОЯС":
                 for line_kz in lines_kz:
-                    p_off += belt(mdl, line=line_kz, belt=arg)  
-                    if log: print( f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
-                    submdl_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict)
+                    p_off += belt(mdl, line=line_kz, belt=arg)
+                    if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                    temp_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, temp_dict)
             elif func == "МАКСТОК":
                 for line_kz in lines_kz:
-                    p_off += enum_biggest_I(mdl, line_kz, kz_types, n=int(arg[0])) 
-                    if log: print( f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
-                    submdl_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict)
+                    p_off += enum_biggest_I(mdl, line_kz, kz_types, n=int(arg[0]))
+                    if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                    temp_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, temp_dict)
             elif func == "ОБЪЕКТЫ":
                 for line_kz in lines_kz:
                     p_off += tuple(arg)
-                    if log: print( f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
-                    submdl_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, submdl_dict) 
+                    if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                    temp_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, temp_dict)
             elif item.startswith('(') and item.endswith(')'):
-                #print('Попытка найти отключенные линии в скобках')
-                submdl_dict = find_p_off_summ_in_buscets(item, m, lines_kz=lines_kz, step=step, kz_types=kz_types, mdl=mdl, submdl_dict=submdl_dict, log=log)
-        for item in sum_item: 
-            if item.startswith('(') and item.endswith(')'):
-                if '*' in item:
-                    # Удаляем первую и последнюю скобку
-                    item = item[1:-1]
-                    submdl_dict = submdl_calc_main(mdl, item, submdl_dict, m, lines_kz, step, p_off, kz_types, log=log)
-                else: continue
-            else: continue
+                temp_dict = find_p_off_summ_in_buscets(item, m, lines_kz=lines_kz, step=step,
+                                                        kz_types=kz_types, mdl=mdl,
+                                                        submdl_dict=temp_dict, log=log)
+
+        # --- Третий проход: рекурсивная обработка скобочных выражений с '*' ---
+        for item in sum_item:
+            if item.startswith('(') and item.endswith(')') and '*' in item:
+                temp_dict = submdl_calc_main(mdl, item[1:-1], temp_dict, m, lines_kz, step, p_off, kz_types, log=log)
+
+        # --- Резервный вызов: если ни один генератор p_off не сработал, используем p_off=() ---
+        # Это обрабатывает выражения вида ЛИНИИКЗ[ВСЕ]*ШАГ[0.5]*ПЕРЕБОР[0]*ТИПКЗ[A0]
+        if not temp_dict and lines_kz:
+            for line_kz in lines_kz:
+                if log: print(f'Перебор:{m}, Линия кз:{line_kz}, Шаг:{step}, откл линии:{p_off}, Типы кз:{kz_types}')
+                temp_dict = base_func(mdl, m, line_kz, step, p_off, kz_types, temp_dict)
+
+        # Накапливаем в positive или negative словарь с правильной нумерацией
+        target = positive_dict if sign > 0 else negative_dict
+        offset = max(target.keys(), default=0)
+        for old_id, entry in temp_dict.items():
+            new_id = offset + old_id
+            target[new_id] = {**entry, 'id': new_id}
+
+    # Применяем вычитание и добавляем результат в submdl_dict
+    delta = subtract_submdl_dicts(positive_dict, negative_dict)
+    offset = max(submdl_dict.keys(), default=0)
+    for old_id, entry in delta.items():
+        new_id = offset + old_id
+        submdl_dict[new_id] = {**entry, 'id': new_id}
+
     return submdl_dict

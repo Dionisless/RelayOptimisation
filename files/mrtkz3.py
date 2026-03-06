@@ -524,7 +524,8 @@ class P:
         self.nq1_def = 0
         self.nq2_def = 0
         self.q1_def = []
-        self.q2_def =[]
+        self.q2_def = []
+        self.elem = None
 
 #        if E!=0:
 #            node_color = 'red'
@@ -879,7 +880,7 @@ class protection:
         
 
  '''   
-    def __init__(self, p, q, stage, I0, t, stat_id='',type='ТЗНП', P_rnm=0, rnm_base_angle=0, stage_on = True, rnm_on = False, I0_range=[300,3000], t_range=[0,20], desc='', k_ch=0.83, k_ots=1.2, k_voz=0.85):
+    def __init__(self, p, q, stage, I0, t, stat_id='', type='ТЗНП', P_rnm=0, rnm_base_angle=0, stage_on=True, rnm_on=False, I0_range=[300,3000], t_range=[0,20], desc='', k_ch=0.83, k_ots=1.2, k_voz=0.85, ktt='', kth='', relay_type=''):
 
         if p.q1==q:
             p.q1_def.append(self)
@@ -915,12 +916,46 @@ class protection:
         self.k_ch = k_ch
         self.k_ots = k_ots
         self.k_voz = k_voz
-        
+        self.ktt = ktt
+        self.kth = kth
+        self.relay_type = relay_type
+
     def edit(self, I0, t, stage_on = True):
         #Изменить уставки защиты можно с помощью метода
         self.I0 = I0
         self.t = t
-    
+
+
+class Element:
+    """
+    Элемент сети — логическое объединение нескольких ветвей P в один физический объект.
+
+    Используется для представления многосекционных линий, автотрансформаторов и других
+    объектов, моделируемых несколькими ветвями. Позволяет отключать весь элемент целиком
+    и задавать место КЗ в процентах от длины элемента.
+
+    Параметры:
+        model -- объект расчётной модели
+        name  -- идентификатор элемента (обычно номер из АРМ СРЗА)
+        desc  -- текстовое описание (по умолчанию: '')
+
+    Атрибуты:
+        id    -- порядковый номер элемента в модели
+        plist -- список ветвей P, входящих в элемент (в порядке добавления)
+    """
+    def __init__(self, model, name, desc=''):
+        model.ne += 1
+        model.be.append(self)
+        self.id = model.ne
+        self.model = model
+        self.name = str(name)
+        self.desc = desc
+        self.plist = []
+
+    def addp(self, p):
+        """Добавить ветвь p в элемент и установить p.elem = self."""
+        self.plist.append(p)
+        p.elem = self
 
 
 class M:
@@ -1254,11 +1289,13 @@ class Model:
         self.nm = 0
         self.nn = 0
         self.nd = 0
+        self.ne = 0
         self.bq = []
         self.bp = []
         self.bm = []
         self.bn = []
         self.bd = []
+        self.be = []
         self.X = None
         self.G = nx.Graph()
     def AddNQ(self,NQ,Nname):
