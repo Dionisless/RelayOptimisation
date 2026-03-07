@@ -610,10 +610,23 @@ def duplicate_mdl(mdl1, show_G = False):
         # добавляем в подрежим ветвь
         mrtkz.P(mdl2,name=p.name,q1=q1,q2=q2,Z=p.Z,E=p.E,T=p.T,B=p.B,desc=p.desc)
         for prot1 in p.q1_def:
-            mrtkz.protection(p=mdl2.bp[-1], q=mdl2.bp[-1].q1, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
-        
+            mrtkz.protection(p=mdl2.bp[-1], q=mdl2.bp[-1].q1, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz, ktt=prot1.ktt, kth=prot1.kth, relay_type=prot1.relay_type)
+
         for prot1 in p.q2_def:
-            mrtkz.protection(p=mdl2.bp[-1], q=mdl2.bp[-1].q2, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz)
+            mrtkz.protection(p=mdl2.bp[-1], q=mdl2.bp[-1].q2, stat_id=prot1.stat_id, type=prot1.type, stage=prot1.stage, I0=prot1.I0, t=prot1.t, P_rnm=prot1.P_rnm, rnm_base_angle=prot1.rnm_on, stage_on = prot1.stage_on, I0_range=prot1.I0_range, t_range=prot1.t_range, desc=prot1.desc, k_ch=prot1.k_ch, k_ots=prot1.k_ots, k_voz=prot1.k_voz, ktt=prot1.ktt, kth=prot1.kth, relay_type=prot1.relay_type)
+
+    # добавляем в подрежим элементы
+    e_map = {}  # old_elem_id → new_elem
+    for e1 in mdl1.be:
+        e2 = mrtkz.Element(mdl2, e1.name, desc=e1.desc)
+        e_map[e1.id] = e2
+    # привязываем ветви к элементам
+    for p1 in mdl1.bp:
+        if p1.elem is not None:
+            p2 = p_search(mdl=mdl2, p_name=p1.name)
+            new_elem = e_map.get(p1.elem.id)
+            if p2 and new_elem:
+                new_elem.addp(p2)
 
     # добавляем в подрежим взаимоиндукции
     for m in mdl1.bm:
