@@ -145,7 +145,7 @@ class PowerGridOptimizationApp(tk.Tk):
         ttk.Button(btn_frame, text="Очистка сети", command=self.clear_network).pack(side="left", padx=5)
 
         self.object_var = tk.StringVar(value="Узлы")
-        object_menu = ttk.Combobox(left_frame, textvariable=self.object_var, values=["Узлы", "Линии", "Взаимоиндукции"])
+        object_menu = ttk.Combobox(left_frame, textvariable=self.object_var, values=["Узлы", "Линии", "Взаимоиндукции", "Элементы", "Защиты"])
         object_menu.pack(side="top", fill="x", padx=5, pady=5)
         object_menu.bind("<<ComboboxSelected>>", self.update_table)
 
@@ -358,7 +358,7 @@ class PowerGridOptimizationApp(tk.Tk):
     def import_fond_from_file(self):
         """Загружает фонд защит из файла АРМ СРЗА (.xlsx) и добавляет защиты в текущую модель."""
         if not self.mdl or not self.mdl.bp:
-            tk.messagebox.showerror("Ошибка", "Сначала загрузите сетевую модель")
+            tk.messagebox.showinfo("Информация", "Сначала загрузите сетевую модель")
             return
 
         filename = filedialog.askopenfilename(
@@ -500,7 +500,37 @@ class PowerGridOptimizationApp(tk.Tk):
             self.tree.column("M21", width=100, minwidth=50)
 
             for m in self.mdl.bm:
-                self.tree.insert("", "end", values=(m.name, m.p1.name, m.p2.name, complex(m.M12), complex(m.M21)))                                    
+                self.tree.insert("", "end", values=(m.name, m.p1.name, m.p2.name, complex(m.M12), complex(m.M21)))
+
+        elif self.object_var.get() == "Элементы":
+            self.tree["columns"] = ["Номер", "Название", "Ветвей", "Описание"]
+            for col in self.tree["columns"]:
+                self.tree.heading(col, text=col)
+            self.tree.column("Номер", width=60, minwidth=40)
+            self.tree.column("Название", width=120, minwidth=60)
+            self.tree.column("Ветвей", width=60, minwidth=40)
+            self.tree.column("Описание", width=300, minwidth=100)
+
+            for e in self.mdl.be:
+                self.tree.insert("", "end", values=(e.id, e.name, len(e.plist), e.desc))
+
+        elif self.object_var.get() == "Защиты":
+            self.tree["columns"] = ["Ветвь", "Узел", "Ступень", "I0", "t", "Тип", "KTT", "Стат.ID", "Описание"]
+            for col in self.tree["columns"]:
+                self.tree.heading(col, text=col)
+            self.tree.column("Ветвь", width=120, minwidth=60)
+            self.tree.column("Узел", width=80, minwidth=40)
+            self.tree.column("Ступень", width=60, minwidth=40)
+            self.tree.column("I0", width=80, minwidth=40)
+            self.tree.column("t", width=60, minwidth=40)
+            self.tree.column("Тип", width=60, minwidth=40)
+            self.tree.column("KTT", width=80, minwidth=40)
+            self.tree.column("Стат.ID", width=80, minwidth=40)
+            self.tree.column("Описание", width=200, minwidth=100)
+
+            for d in self.mdl.bd:
+                q_name = d.q.name if d.q != 0 else '0'
+                self.tree.insert("", "end", values=(d.p.name, q_name, d.stage, d.I0, d.t, d.type, d.ktt, d.stat_id, d.desc))
 
     
     def add_object(self):
